@@ -76,16 +76,24 @@ def _provider_model_name(model):
     return model.split("/")[-1].lower()
 
 
+def _is_openai_provider(model):
+    return "/" not in model or model.lower().startswith("openai/")
+
+
 def _is_o_series_model_name(model_name):
     return model_name in {"o1", "o3", "o4"} or model_name.startswith(("o1-", "o3-", "o4-"))
 
 
 def _is_openai_reasoning_model(model):
+    if not _is_openai_provider(model):
+        return False
     model_name = _provider_model_name(model)
     return model_name.startswith("gpt-5") or _is_o_series_model_name(model_name)
 
 
 def _supports_custom_temperature(model):
+    if not _is_openai_provider(model):
+        return True
     model_name = _provider_model_name(model)
     if model_name.startswith("gpt-5"):
         return model_name.startswith("gpt-5.2")

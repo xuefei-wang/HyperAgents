@@ -701,7 +701,7 @@ def generate(
                     container_agentoutput_folder,
                 ]
             else:
-                meta_model = os.getenv("HYPERAGENTS_META_MODEL") or os.getenv("HYPERAGENTS_POLYGLOT_MODEL")
+                meta_model = os.getenv("HYPERAGENTS_META_MODEL")
                 command = [
                     "timeout",
                     str(meta_agent_timeout_seconds),
