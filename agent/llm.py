@@ -61,26 +61,35 @@ def _openai_reasoning_effort(model):
     effort = (
         os.getenv("HYPERAGENTS_REASONING_EFFORT")
         or os.getenv("OPENAI_REASONING_EFFORT")
+        or os.getenv("REASONING_EFFORT")
         or DEFAULT_OPENAI_REASONING_EFFORT
     ).strip()
     if not effort:
         return None
 
-    model_name = _provider_model_name(model)
-    if model_name.startswith(("gpt-5", "o1-", "o3-", "o4-")):
+    if _is_openai_reasoning_model(model):
         return effort
     return None
 
 
 def _provider_model_name(model):
-    return model.split("/", 1)[-1].lower()
+    return model.split("/")[-1].lower()
+
+
+def _is_o_series_model_name(model_name):
+    return model_name in {"o1", "o3", "o4"} or model_name.startswith(("o1-", "o3-", "o4-"))
+
+
+def _is_openai_reasoning_model(model):
+    model_name = _provider_model_name(model)
+    return model_name.startswith("gpt-5") or _is_o_series_model_name(model_name)
 
 
 def _supports_custom_temperature(model):
     model_name = _provider_model_name(model)
-    if not model_name.startswith("gpt-5"):
-        return True
-    return model_name.startswith("gpt-5.2")
+    if model_name.startswith("gpt-5"):
+        return model_name.startswith("gpt-5.2")
+    return not _is_o_series_model_name(model_name)
 
 
 def _to_plain_dict(value):
@@ -155,8 +164,8 @@ def get_response_from_llm(
     if _supports_custom_temperature(model):
         completion_kwargs["temperature"] = temperature
 
-    # GPT-5 models require max_completion_tokens instead of max_tokens
-    if "gpt-5" in model:
+    # Reasoning chat models require max_completion_tokens instead of max_tokens.
+    if _is_openai_reasoning_model(model):
         completion_kwargs["max_completion_tokens"] = max_tokens
     else:
         # Claude Haiku has a 4096 token limit

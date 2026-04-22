@@ -19,6 +19,15 @@ def _load_shared_env() -> None:
             load_dotenv(env_path, override=True)
 
 
+def _default_model_for_domain(domain):
+    if domain == "polyglot":
+        return os.getenv(
+            "HYPERAGENTS_POLYGLOT_MODEL",
+            os.getenv("HYPERAGENTS_TASK_MODEL", "openai/gpt-5.4-mini"),
+        )
+    return os.getenv("HYPERAGENTS_TASK_MODEL", "openai/gpt-5.4-mini")
+
+
 def main():
     _load_shared_env()
     parser = argparse.ArgumentParser(description='Run task agent on a coding benchmark task.')
@@ -35,17 +44,15 @@ def main():
     parser.add_argument(
         '--model',
         required=False,
-        default=os.getenv(
-            "HYPERAGENTS_POLYGLOT_MODEL",
-            os.getenv("HYPERAGENTS_TASK_MODEL", "openai/gpt-5.4-mini"),
-        ),
+        default=None,
         help='LLM model to use',
     )
     args = parser.parse_args()
+    model = args.model or _default_model_for_domain(args.domain)
 
     # Process the repository
     agentic_system = TaskAgent(
-        model=args.model,
+        model=model,
         chat_history_file=args.chat_history_file,
     )
     inputs = {

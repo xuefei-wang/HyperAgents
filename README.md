@@ -26,6 +26,18 @@ ANTHROPIC_API_KEY=...
 GEMINI_API_KEY=...
 ```
 
+By default, OpenAI-backed task agents use GPT-5.4-mini with medium reasoning.
+Override model settings with environment variables:
+
+```bash
+HYPERAGENTS_TASK_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_POLYGLOT_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_REASONING_EFFORT=medium
+```
+
+`OPENAI_REASONING_EFFORT` and `REASONING_EFFORT` are also accepted as
+reasoning-effort aliases.
+
 ```bash
 # Install things
 sudo dnf install -y python3.12-devel
