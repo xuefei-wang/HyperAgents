@@ -1,7 +1,7 @@
 import argparse
 import os
 
-from agent.llm import CLAUDE_MODEL
+from agent.llm import meta_model_from_env
 from meta_agent import MetaAgent
 from utils.git_utils import diff_versus_commit, reset_paths_to_commit
 
@@ -12,7 +12,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default=CLAUDE_MODEL,
+        default=meta_model_from_env(),
         help="Model to use for the agent",
     )
     parser.add_argument(

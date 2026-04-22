@@ -12,6 +12,7 @@ import docker
 from docker.errors import ImageNotFound
 from dotenv import load_dotenv
 
+from agent.llm import task_model_from_env
 from utils.constants import REPO_NAME
 from utils.common import load_json_file
 from utils.docker_utils import copy_from_container, copy_to_container, safe_log, setup_logger
@@ -30,11 +31,13 @@ def _load_shared_env() -> None:
     repo_root = Path(__file__).resolve().parents[4]
     env_paths = [
         repo_root / "configs" / "providers" / ".env.shared",
+        repo_root / "configs" / "providers" / ".env.haiku",
+        repo_root / "configs" / "providers" / ".env.openai",
         repo_root / "configs" / "models" / "shared.env",
     ]
     for env_path in env_paths:
         if env_path.exists():
-            load_dotenv(env_path, override=True)
+            load_dotenv(env_path, override=False)
 
 
 def _runtime_environment():
@@ -51,9 +54,15 @@ def _runtime_environment():
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
+        "MODEL_PROVIDER",
+        "MODEL_AUTH_MODE",
+        "MODEL",
         "HYPERAGENTS_TASK_MODEL",
         "HYPERAGENTS_POLYGLOT_MODEL",
         "HYPERAGENTS_META_MODEL",
+        "HYPERAGENTS_REASONING_EFFORT",
+        "OPENAI_REASONING_EFFORT",
+        "REASONING_EFFORT",
     ]
     return {key: os.environ[key] for key in keys if os.environ.get(key)}
 
@@ -210,7 +219,7 @@ def process_entry(entry, out_dname: Path, model_name_or_path: str, model_patch_p
 
         chat_history_container = f"/tmp/{instance_id}.md"
         runtime_env = _runtime_environment()
-        agent_model = os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini")
+        agent_model = task_model_from_env()
         cmd = [
             "timeout",
             str(SWEBENCH_PRO_AGENT_TIMEOUT_SECONDS),

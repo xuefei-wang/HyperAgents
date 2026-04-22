@@ -20,7 +20,7 @@ RUN python -m pip install --no-cache-dir \
     docker==7.1.0 \
     datasets==3.6.0 \
     GitPython==3.1.44 \
-    litellm==1.74.9 \
+    litellm==1.83.11 \
     pandas==2.3.2 \
     numpy==2.4.4 \
     matplotlib==3.10.3 \

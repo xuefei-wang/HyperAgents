@@ -26,6 +26,25 @@ ANTHROPIC_API_KEY=...
 GEMINI_API_KEY=...
 ```
 
+Model settings can be supplied in the environment or shared config files:
+
+```bash
+HYPERAGENTS_TASK_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_POLYGLOT_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_META_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_REASONING_EFFORT=medium
+```
+
+`OPENAI_REASONING_EFFORT` and `REASONING_EFFORT` are also accepted as
+reasoning-effort aliases. Explicit process environment values take precedence
+over shared config files. When `HYPERAGENTS_*_MODEL` is unset, HyperAgents also
+accepts provider-profile settings such as `MODEL_PROVIDER=openai` with
+`MODEL=gpt-5.4-mini`, normalized to LiteLLM form (`openai/gpt-5.4-mini`).
+
+Shared config files are discovered from these swarms-repo paths when present:
+`configs/providers/.env.shared`, `configs/providers/.env.haiku`,
+`configs/providers/.env.openai`, and `configs/models/shared.env`.
+
 ```bash
 # Install things
 sudo dnf install -y python3.12-devel
