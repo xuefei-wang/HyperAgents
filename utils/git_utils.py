@@ -1,5 +1,4 @@
 import os
-import git
 import subprocess
 
 
@@ -20,14 +19,16 @@ def _is_ignored_diff_path(path):
 
 
 def get_git_commit_hash(repo_path='.'):
-    try:
-        # Load the repository
-        repo = git.Repo(repo_path)
-        # Get the current commit hash
-        commit_hash = repo.head.commit.hexsha
-        return commit_hash
-    except Exception as e:
-        print("Error while getting git commit hash:", e)
+    result = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    else:
+        print("Error while getting git commit hash:", result.stderr.strip())
         return None
 
 def apply_patch(git_dname, patch_str):
