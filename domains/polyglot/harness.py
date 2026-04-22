@@ -163,6 +163,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             "HYPERAGENTS_POLYGLOT_MODEL",
             "HYPERAGENTS_REASONING_EFFORT",
             "OPENAI_REASONING_EFFORT",
+            "REASONING_EFFORT",
         ])
         safe_log("Running the agent")
         agent_model = os.getenv("HYPERAGENTS_POLYGLOT_MODEL", os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini"))

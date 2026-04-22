@@ -105,6 +105,7 @@ def _runtime_environment():
         "HYPERAGENTS_META_MODEL",
         "HYPERAGENTS_REASONING_EFFORT",
         "OPENAI_REASONING_EFFORT",
+        "REASONING_EFFORT",
     ]
     return {key: os.environ[key] for key in keys if os.environ.get(key)}
 
