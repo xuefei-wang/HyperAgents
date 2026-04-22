@@ -12,7 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import pandas as pd
 from hydra import compose, initialize_config_dir
-from types import ModuleType
+
+from agent.llm import provider_profile_model_from_env
 
 
 def get_dataset(domain, subset=""):
@@ -30,6 +31,14 @@ def run_agent(TaskAgent, model, row, evals_folder, format_input_dict, question_i
     inputs = format_input_dict(row)
     prediction, _ = agent.forward(inputs)
     return prediction
+
+
+def _domain_model(utils_module):
+    return (
+        os.getenv("HYPERAGENTS_TASK_MODEL")
+        or provider_profile_model_from_env()
+        or utils_module.MODEL
+    )
 
 
 def load_task_agent(agent_path: str):
@@ -76,7 +85,7 @@ def harness(
     utils_module = importlib.import_module(utils_module_path)
     format_input_dict = utils_module.format_input_dict
     question_id_col = utils_module.QUESTION_ID
-    model = utils_module.MODEL
+    model = _domain_model(utils_module)
 
     # Load TaskAgent either from a file path or an importable module path
     TaskAgent = load_task_agent(agent_path)

@@ -28,7 +28,7 @@ def _load_shared_env() -> None:
                 continue
             loaded.add(env_path)
             if env_path.exists():
-                load_dotenv(env_path, override=True)
+                load_dotenv(env_path, override=False)
 
 
 load_dotenv()
@@ -39,8 +39,7 @@ MAX_TOKENS = 16384
 CLAUDE_MODEL = "anthropic/claude-sonnet-4-5-20250929"
 CLAUDE_HAIKU_MODEL = "anthropic/claude-3-haiku-20240307"
 CLAUDE_35NEW_MODEL = "anthropic/claude-3-5-sonnet-20241022"
-OPENAI_MODEL = "openai/gpt-4o"
-OPENAI_MINI_MODEL = "openai/gpt-4o-mini"
+OPENAI_GPT54MINI_MODEL = "openai/gpt-5.4-mini"
 OPENAI_O3_MODEL = "openai/o3"
 OPENAI_O3MINI_MODEL = "openai/o3-mini"
 OPENAI_O4MINI_MODEL = "openai/o4-mini"
@@ -52,6 +51,47 @@ GEMINI_MODEL = "gemini/gemini-2.5-pro"
 GEMINI_FLASH_MODEL = "gemini/gemini-2.5-flash"
 
 litellm.drop_params=True
+
+
+def normalize_provider_model(provider, model):
+    model = (model or "").strip()
+    if not model:
+        return None
+    if "/" in model:
+        return model
+
+    provider = (provider or "").strip().lower()
+    if provider:
+        return f"{provider}/{model}"
+    if model.startswith(("gpt-", "o1", "o3", "o4")):
+        return f"openai/{model}"
+    if model.startswith("claude-"):
+        return f"anthropic/{model}"
+    return model
+
+
+def provider_profile_model_from_env():
+    return normalize_provider_model(os.getenv("MODEL_PROVIDER"), os.getenv("MODEL"))
+
+
+def task_model_from_env():
+    return (
+        os.getenv("HYPERAGENTS_TASK_MODEL")
+        or provider_profile_model_from_env()
+        or OPENAI_GPT54MINI_MODEL
+    )
+
+
+def polyglot_model_from_env():
+    return os.getenv("HYPERAGENTS_POLYGLOT_MODEL") or task_model_from_env()
+
+
+def meta_model_from_env():
+    return os.getenv("HYPERAGENTS_META_MODEL") or provider_profile_model_from_env() or CLAUDE_MODEL
+
+
+OPENAI_MODEL = task_model_from_env()
+OPENAI_MINI_MODEL = OPENAI_GPT54MINI_MODEL
 
 
 def _openai_reasoning_effort(model):
@@ -73,19 +113,29 @@ def _provider_model_name(model):
     return model.split("/")[-1].lower()
 
 
+def _is_openai_provider(model):
+    return "/" not in model or model.lower().startswith("openai/")
+
+
 def _is_o_series_model_name(model_name):
     return model_name in {"o1", "o3", "o4"} or model_name.startswith(("o1-", "o3-", "o4-"))
 
 
 def _is_openai_reasoning_model(model):
+    if not _is_openai_provider(model):
+        return False
     model_name = _provider_model_name(model)
     return model_name.startswith("gpt-5") or _is_o_series_model_name(model_name)
 
 
-def _supports_custom_temperature(model):
+def _supports_custom_temperature(model, reasoning_effort=None):
+    if not _is_openai_provider(model):
+        return True
     model_name = _provider_model_name(model)
+    if model_name.startswith(("gpt-5.1", "gpt-5.2")):
+        return reasoning_effort == "none"
     if model_name.startswith("gpt-5"):
-        return model_name.startswith("gpt-5.2")
+        return False
     return not _is_o_series_model_name(model_name)
 
 
@@ -157,8 +207,10 @@ def get_response_from_llm(
         "messages": new_msg_history,
     }
 
-    # GPT-5.2 supports temperature; earlier GPT-5 variants and GPT-5.4 use the default.
-    if _supports_custom_temperature(model):
+    reasoning_effort = _openai_reasoning_effort(model)
+
+    # GPT-5.1/5.2 only support temperature when reasoning effort is none.
+    if _supports_custom_temperature(model, reasoning_effort):
         completion_kwargs["temperature"] = temperature
 
     # Reasoning chat models require max_completion_tokens instead of max_tokens.
@@ -171,7 +223,6 @@ def get_response_from_llm(
         else:
             completion_kwargs["max_tokens"] = max_tokens
 
-    reasoning_effort = _openai_reasoning_effort(model)
     if reasoning_effort:
         completion_kwargs["reasoning_effort"] = reasoning_effort
 

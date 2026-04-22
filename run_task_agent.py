@@ -4,6 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from agent.llm import polyglot_model_from_env, task_model_from_env
 from task_agent import TaskAgent
 from utils.git_utils import diff_versus_commit
 
@@ -16,7 +17,13 @@ def _load_shared_env() -> None:
     ]
     for env_path in env_paths:
         if env_path.exists():
-            load_dotenv(env_path, override=True)
+            load_dotenv(env_path, override=False)
+
+
+def _default_model_for_domain(domain):
+    if domain == "polyglot":
+        return polyglot_model_from_env()
+    return task_model_from_env()
 
 
 def main():
@@ -35,14 +42,15 @@ def main():
     parser.add_argument(
         '--model',
         required=False,
-        default=os.getenv("HYPERAGENTS_POLYGLOT_MODEL", os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini")),
+        default=None,
         help='LLM model to use',
     )
     args = parser.parse_args()
+    model = args.model or _default_model_for_domain(args.domain)
 
     # Process the repository
     agentic_system = TaskAgent(
-        model=args.model,
+        model=model,
         chat_history_file=args.chat_history_file,
     )
     inputs = {

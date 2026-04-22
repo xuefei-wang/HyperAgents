@@ -11,6 +11,7 @@ import docker
 from datasets import load_dataset
 from dotenv import load_dotenv
 
+from agent.llm import polyglot_model_from_env
 from utils.constants import REPO_NAME
 from utils.common import load_json_file
 from domains.polyglot.testrepo_prompt import get_test_description
@@ -44,7 +45,7 @@ def _load_shared_env() -> None:
     ]
     for env_path in env_paths:
         if env_path.exists():
-            load_dotenv(env_path, override=True)
+            load_dotenv(env_path, override=False)
 
 
 def _collect_runtime_env(names):
@@ -159,6 +160,9 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             "AWS_REGION_NAME",
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",
+            "MODEL_PROVIDER",
+            "MODEL_AUTH_MODE",
+            "MODEL",
             "HYPERAGENTS_TASK_MODEL",
             "HYPERAGENTS_POLYGLOT_MODEL",
             "HYPERAGENTS_REASONING_EFFORT",
@@ -166,7 +170,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             "REASONING_EFFORT",
         ])
         safe_log("Running the agent")
-        agent_model = os.getenv("HYPERAGENTS_POLYGLOT_MODEL", os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini"))
+        agent_model = polyglot_model_from_env()
         cmd = [
             "timeout", "600",  # 10 min timeout
             "python", f"/{REPO_NAME}/run_task_agent.py",

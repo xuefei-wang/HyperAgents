@@ -10,6 +10,8 @@ from pathlib import Path
 import docker
 from dotenv import load_dotenv
 
+from agent.llm import meta_model_from_env
+
 try:
     from analysis.plot_progress import plot_progress_single, plot_progress_together
     from analysis.visualize_archive import (
@@ -83,7 +85,7 @@ def _load_shared_env() -> None:
     ]
     for env_path in env_paths:
         if os.path.exists(env_path):
-            load_dotenv(env_path, override=True)
+            load_dotenv(env_path, override=False)
 
 
 def _runtime_environment():
@@ -100,6 +102,9 @@ def _runtime_environment():
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
+        "MODEL_PROVIDER",
+        "MODEL_AUTH_MODE",
+        "MODEL",
         "HYPERAGENTS_TASK_MODEL",
         "HYPERAGENTS_POLYGLOT_MODEL",
         "HYPERAGENTS_META_MODEL",
@@ -701,7 +706,7 @@ def generate(
                     container_agentoutput_folder,
                 ]
             else:
-                meta_model = os.getenv("HYPERAGENTS_META_MODEL") or os.getenv("HYPERAGENTS_POLYGLOT_MODEL")
+                meta_model = meta_model_from_env()
                 command = [
                     "timeout",
                     str(meta_agent_timeout_seconds),
