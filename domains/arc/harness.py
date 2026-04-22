@@ -472,7 +472,7 @@ def process_entry(entry, out_dname: Path, model_name_or_path: str, model_patch_p
         copy_to_container(container, workspace_dir, "/testbed", verbose=False)
 
         chat_history_container = f"/tmp/{instance_id}.md"
-        agent_model = os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini")
+        agent_model = os.getenv("HYPERAGENTS_TASK_MODEL", "openai/gpt-5.4-mini")
         problem_statement = _build_problem_statement(load_json_file(entry["payload_file"]))
         cmd = [
             "timeout",

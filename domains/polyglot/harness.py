@@ -165,7 +165,10 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             "OPENAI_REASONING_EFFORT",
         ])
         safe_log("Running the agent")
-        agent_model = os.getenv("HYPERAGENTS_POLYGLOT_MODEL", os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini"))
+        agent_model = os.getenv(
+            "HYPERAGENTS_POLYGLOT_MODEL",
+            os.getenv("HYPERAGENTS_TASK_MODEL", "openai/gpt-5.4-mini"),
+        )
         cmd = [
             "timeout", "600",  # 10 min timeout
             "python", f"/{REPO_NAME}/run_task_agent.py",

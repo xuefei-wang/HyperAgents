@@ -35,7 +35,10 @@ def main():
     parser.add_argument(
         '--model',
         required=False,
-        default=os.getenv("HYPERAGENTS_POLYGLOT_MODEL", os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini")),
+        default=os.getenv(
+            "HYPERAGENTS_POLYGLOT_MODEL",
+            os.getenv("HYPERAGENTS_TASK_MODEL", "openai/gpt-5.4-mini"),
+        ),
         help='LLM model to use',
     )
     args = parser.parse_args()

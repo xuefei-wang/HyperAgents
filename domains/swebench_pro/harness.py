@@ -214,7 +214,7 @@ def process_entry(entry, out_dname: Path, model_name_or_path: str, model_patch_p
 
         chat_history_container = f"/tmp/{instance_id}.md"
         runtime_env = _runtime_environment()
-        agent_model = os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini")
+        agent_model = os.getenv("HYPERAGENTS_TASK_MODEL", "openai/gpt-5.4-mini")
         cmd = [
             "timeout",
             str(SWEBENCH_PRO_AGENT_TIMEOUT_SECONDS),

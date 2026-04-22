@@ -39,8 +39,9 @@ MAX_TOKENS = 16384
 CLAUDE_MODEL = "anthropic/claude-sonnet-4-5-20250929"
 CLAUDE_HAIKU_MODEL = "anthropic/claude-3-haiku-20240307"
 CLAUDE_35NEW_MODEL = "anthropic/claude-3-5-sonnet-20241022"
-OPENAI_MODEL = "openai/gpt-4o"
-OPENAI_MINI_MODEL = "openai/gpt-4o-mini"
+OPENAI_GPT54MINI_MODEL = "openai/gpt-5.4-mini"
+OPENAI_MODEL = OPENAI_GPT54MINI_MODEL
+OPENAI_MINI_MODEL = OPENAI_GPT54MINI_MODEL
 OPENAI_O3_MODEL = "openai/o3"
 OPENAI_O3MINI_MODEL = "openai/o3-mini"
 OPENAI_O4MINI_MODEL = "openai/o4-mini"
@@ -51,11 +52,17 @@ GEMINI_3_MODEL = "gemini/gemini-3-pro-preview"
 GEMINI_MODEL = "gemini/gemini-2.5-pro"
 GEMINI_FLASH_MODEL = "gemini/gemini-2.5-flash"
 
+DEFAULT_OPENAI_REASONING_EFFORT = "medium"
+
 litellm.drop_params=True
 
 
 def _openai_reasoning_effort(model):
-    effort = (os.getenv("HYPERAGENTS_REASONING_EFFORT") or os.getenv("OPENAI_REASONING_EFFORT") or "").strip()
+    effort = (
+        os.getenv("HYPERAGENTS_REASONING_EFFORT")
+        or os.getenv("OPENAI_REASONING_EFFORT")
+        or DEFAULT_OPENAI_REASONING_EFFORT
+    ).strip()
     if not effort:
         return None
 
@@ -190,6 +197,7 @@ if __name__ == "__main__":
         ("OPENAI_GPT52_MODEL", OPENAI_GPT52_MODEL),
         ("OPENAI_GPT5_MODEL", OPENAI_GPT5_MODEL),
         ("OPENAI_GPT5MINI_MODEL", OPENAI_GPT5MINI_MODEL),
+        ("OPENAI_GPT54MINI_MODEL", OPENAI_GPT54MINI_MODEL),
         ("GEMINI_3_MODEL", GEMINI_3_MODEL),
         ("GEMINI_MODEL", GEMINI_MODEL),
         ("GEMINI_FLASH_MODEL", GEMINI_FLASH_MODEL),
