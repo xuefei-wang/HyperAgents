@@ -77,6 +77,8 @@ def _load_shared_env() -> None:
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     env_paths = [
         os.path.join(repo_root, "configs", "providers", ".env.shared"),
+        os.path.join(repo_root, "configs", "providers", ".env.haiku"),
+        os.path.join(repo_root, "configs", "providers", ".env.openai"),
         os.path.join(repo_root, "configs", "models", "shared.env"),
     ]
     for env_path in env_paths:
@@ -101,6 +103,8 @@ def _runtime_environment():
         "HYPERAGENTS_TASK_MODEL",
         "HYPERAGENTS_POLYGLOT_MODEL",
         "HYPERAGENTS_META_MODEL",
+        "HYPERAGENTS_REASONING_EFFORT",
+        "OPENAI_REASONING_EFFORT",
     ]
     return {key: os.environ[key] for key in keys if os.environ.get(key)}
 

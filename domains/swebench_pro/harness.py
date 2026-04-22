@@ -30,6 +30,8 @@ def _load_shared_env() -> None:
     repo_root = Path(__file__).resolve().parents[4]
     env_paths = [
         repo_root / "configs" / "providers" / ".env.shared",
+        repo_root / "configs" / "providers" / ".env.haiku",
+        repo_root / "configs" / "providers" / ".env.openai",
         repo_root / "configs" / "models" / "shared.env",
     ]
     for env_path in env_paths:
@@ -54,6 +56,8 @@ def _runtime_environment():
         "HYPERAGENTS_TASK_MODEL",
         "HYPERAGENTS_POLYGLOT_MODEL",
         "HYPERAGENTS_META_MODEL",
+        "HYPERAGENTS_REASONING_EFFORT",
+        "OPENAI_REASONING_EFFORT",
     ]
     return {key: os.environ[key] for key in keys if os.environ.get(key)}
 

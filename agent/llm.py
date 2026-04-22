@@ -20,6 +20,8 @@ def _load_shared_env() -> None:
     for repo_root in candidate_roots:
         for env_path in [
             repo_root / "configs" / "providers" / ".env.shared",
+            repo_root / "configs" / "providers" / ".env.haiku",
+            repo_root / "configs" / "providers" / ".env.openai",
             repo_root / "configs" / "models" / "shared.env",
         ]:
             if env_path in loaded:
@@ -50,6 +52,28 @@ GEMINI_MODEL = "gemini/gemini-2.5-pro"
 GEMINI_FLASH_MODEL = "gemini/gemini-2.5-flash"
 
 litellm.drop_params=True
+
+
+def _openai_reasoning_effort(model):
+    effort = (os.getenv("HYPERAGENTS_REASONING_EFFORT") or os.getenv("OPENAI_REASONING_EFFORT") or "").strip()
+    if not effort:
+        return None
+
+    model_name = _provider_model_name(model)
+    if model_name.startswith(("gpt-5", "o1-", "o3-", "o4-")):
+        return effort
+    return None
+
+
+def _provider_model_name(model):
+    return model.split("/", 1)[-1].lower()
+
+
+def _supports_custom_temperature(model):
+    model_name = _provider_model_name(model)
+    if not model_name.startswith("gpt-5"):
+        return True
+    return model_name.startswith("gpt-5.2")
 
 
 def _to_plain_dict(value):
@@ -120,11 +144,8 @@ def get_response_from_llm(
         "messages": new_msg_history,
     }
 
-    # GPT-5 and GPT-5-mini only support default temperature (1), skip it
-    # GPT-5.2 supports temperature
-    if model in ["openai/gpt-5", "openai/gpt-5-mini"]:
-        pass  # Don't set temperature
-    else:
+    # GPT-5.2 supports temperature; earlier GPT-5 variants and GPT-5.4 use the default.
+    if _supports_custom_temperature(model):
         completion_kwargs["temperature"] = temperature
 
     # GPT-5 models require max_completion_tokens instead of max_tokens
@@ -136,6 +157,10 @@ def get_response_from_llm(
             completion_kwargs["max_tokens"] = min(max_tokens, 4096)
         else:
             completion_kwargs["max_tokens"] = max_tokens
+
+    reasoning_effort = _openai_reasoning_effort(model)
+    if reasoning_effort:
+        completion_kwargs["reasoning_effort"] = reasoning_effort
 
     response = litellm.completion(**completion_kwargs)
     info = _extract_response_info(response, model)

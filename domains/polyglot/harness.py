@@ -38,6 +38,8 @@ def _load_shared_env() -> None:
     repo_root = Path(__file__).resolve().parents[4]
     env_paths = [
         repo_root / "configs" / "providers" / ".env.shared",
+        repo_root / "configs" / "providers" / ".env.haiku",
+        repo_root / "configs" / "providers" / ".env.openai",
         repo_root / "configs" / "models" / "shared.env",
     ]
     for env_path in env_paths:
@@ -159,6 +161,8 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             "AWS_SECRET_ACCESS_KEY",
             "HYPERAGENTS_TASK_MODEL",
             "HYPERAGENTS_POLYGLOT_MODEL",
+            "HYPERAGENTS_REASONING_EFFORT",
+            "OPENAI_REASONING_EFFORT",
         ])
         safe_log("Running the agent")
         agent_model = os.getenv("HYPERAGENTS_POLYGLOT_MODEL", os.getenv("HYPERAGENTS_TASK_MODEL", "o3-mini"))
