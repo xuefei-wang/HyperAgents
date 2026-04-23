@@ -34,7 +34,7 @@ def _load_shared_env() -> None:
         repo_root / "configs" / "models" / "shared.env",
     ]:
         if env_path.exists():
-            load_dotenv(env_path, override=True)
+            load_dotenv(env_path, override=False)
 
 
 def _runtime_environment():

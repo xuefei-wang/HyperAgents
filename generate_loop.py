@@ -46,7 +46,7 @@ from utils.domain_utils import (
     get_domain_splits,
     get_domain_stagedeval_samples,
 )
-from domains.polyglot.constants import POLYGLOT_TASK_MAP_DIR
+from domains.polyglot.constants import POLYGLOT_MEDIUM_TASK_MAP, POLYGLOT_SMALL_TASK_MAP
 from utils.gl_utils import (
     apply_diffs_container,
     get_patch_files,
@@ -64,15 +64,6 @@ from utils.gl_utils import (
 
 SPECIAL_WORKSPACE_DOMAINS = {"polyglot", "swebench_pro", "arc1", "arc2"}
 
-
-def _first_existing_path(*paths):
-    for path in paths:
-        candidate = Path(path)
-        if candidate.exists():
-            return candidate
-    return Path(paths[-1])
-
-
 def _load_shared_env() -> None:
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     env_paths = [
@@ -83,7 +74,7 @@ def _load_shared_env() -> None:
     ]
     for env_path in env_paths:
         if os.path.exists(env_path):
-            load_dotenv(env_path, override=True)
+            load_dotenv(env_path, override=False)
 
 
 def _runtime_environment():
@@ -124,12 +115,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
 
     # Small sample size evaluation for staged eval
     if not skip_staged_eval:
-        benchmark_subset = _first_existing_path(
-            POLYGLOT_TASK_MAP_DIR / "small.json",
-            POLYGLOT_TASK_MAP_DIR / "polyglot_small_50_seed0_ids.json",
-            "./domains/polyglot/subsets/small.json",
-        )
-        test_task_list = load_json_file(str(benchmark_subset))
+        test_task_list = load_json_file(str(POLYGLOT_SMALL_TASK_MAP))
         dnames = harness_polyglot(
             test_task_list=test_task_list,
             num_samples=-1,
@@ -148,12 +134,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
 
     # Check if additional evaluation should be run
     if run_next_eval:
-        benchmark_subset = _first_existing_path(
-            POLYGLOT_TASK_MAP_DIR / "medium.json",
-            POLYGLOT_TASK_MAP_DIR / "polyglot_medium_50_seed0_ids.json",
-            "./domains/polyglot/subsets/medium.json",
-        )
-        test_task_list_more = load_json_file(str(benchmark_subset))
+        test_task_list_more = load_json_file(str(POLYGLOT_MEDIUM_TASK_MAP))
         task_list = test_task_list + test_task_list_more
         dnames = harness_polyglot(
             test_task_list=task_list,

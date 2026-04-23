@@ -20,8 +20,9 @@ from domains.polyglot.constants import (
     MAP_REPO_VERSION_TO_SPECS,
     TEST_COMMANDS,
     POLYGLOT_METADATA_PATH,
+    POLYGLOT_MEDIUM_TASK_MAP,
+    POLYGLOT_SMALL_TASK_MAP,
     POLYGLOT_SOURCE_DIR,
-    POLYGLOT_TASK_MAP_DIR,
 )
 from domains.polyglot.git_utils import filter_patch_by_files, remove_patch_by_files
 from domains.polyglot.utils import (
@@ -44,7 +45,7 @@ def _load_shared_env() -> None:
     ]
     for env_path in env_paths:
         if env_path.exists():
-            load_dotenv(env_path, override=True)
+            load_dotenv(env_path, override=False)
 
 
 def _collect_runtime_env(names):
@@ -475,13 +476,9 @@ def main():
     args = parser.parse_args()
 
     if args.subset == "small":
-        benchmark_subset = POLYGLOT_TASK_MAP_DIR / "small.json"
-        fallback_subset = "./domains/polyglot/subsets/small.json"
-        task_list = load_json_file(str(benchmark_subset if benchmark_subset.exists() else fallback_subset))
+        task_list = load_json_file(str(POLYGLOT_SMALL_TASK_MAP))
     elif args.subset == "medium":
-        benchmark_subset = POLYGLOT_TASK_MAP_DIR / "medium.json"
-        fallback_subset = "./domains/polyglot/subsets/medium.json"
-        task_list = load_json_file(str(benchmark_subset if benchmark_subset.exists() else fallback_subset))
+        task_list = load_json_file(str(POLYGLOT_MEDIUM_TASK_MAP))
     else:
         with open(POLYGLOT_METADATA_PATH) as f:
             metadata = json.loads(f.read())

@@ -22,7 +22,7 @@ def _load_shared_env() -> None:
     loaded = set()
     for env_path in env_paths:
         if env_path.exists() and env_path not in loaded:
-            load_dotenv(env_path, override=True)
+            load_dotenv(env_path, override=False)
             loaded.add(env_path)
 
 

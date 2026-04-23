@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 
@@ -8,8 +9,18 @@ SWEBENCH_PRO_BENCHMARK_DIR = WORKSPACE_ROOT / "benchmarks" / "swebench_pro"
 SWEBENCH_PRO_SOURCE_DIR = SWEBENCH_PRO_BENCHMARK_DIR / "source"
 SWEBENCH_PRO_TASK_MAP_DIR = SWEBENCH_PRO_BENCHMARK_DIR / "task_maps"
 SWEBENCH_PRO_REPO_CACHE_DIR = SWEBENCH_PRO_BENCHMARK_DIR / "repo_cache"
-SWEBENCH_PRO_DATASET_PATH = SWEBENCH_PRO_BENCHMARK_DIR / "dataset" / "test.jsonl"
-SWEBENCH_PRO_DEFAULT_TASK_MAP = SWEBENCH_PRO_TASK_MAP_DIR / "swebench_pro_test_50_seed0_v1.json"
+SWEBENCH_PRO_DATASET_PATH = Path(
+    os.environ.get(
+        "HYPERAGENTS_SWEBENCH_PRO_DATASET_PATH",
+        SWEBENCH_PRO_BENCHMARK_DIR / "dataset" / "test.jsonl",
+    )
+)
+SWEBENCH_PRO_DEFAULT_TASK_MAP = Path(
+    os.environ.get(
+        "HYPERAGENTS_SWEBENCH_PRO_TASK_MAP",
+        SWEBENCH_PRO_TASK_MAP_DIR / "swebench_pro_test_50_seed0_v1.json",
+    )
+)
 
 SWEBENCH_PRO_AGENT_TIMEOUT_SECONDS = 600
 SWEBENCH_PRO_EVAL_DOCKERHUB_USERNAME = "jefzda"

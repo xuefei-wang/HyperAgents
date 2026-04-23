@@ -27,7 +27,7 @@ def _load_shared_env() -> None:
                 continue
             loaded.add(env_path)
             if env_path.exists():
-                load_dotenv(env_path, override=True)
+                load_dotenv(env_path, override=False)
 
 
 load_dotenv()
