@@ -1,6 +1,9 @@
-import asyncio
 import os
 import subprocess
+
+
+TIMEOUT_SECONDS = 120.0
+
 
 def tool_info():
     return {
@@ -9,7 +12,7 @@ def tool_info():
 * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
 * You don't have access to the internet via this tool.
 * You do have access to a mirror of common linux and python packages via apt and pip.
-* State is persistent across command calls and discussions with the user.
+* Each call runs in a fresh shell. State does not persist across command calls, so chain related steps with `&&`.
 * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
 * Do not use shell heredocs such as python <<'PY' or cat <<'EOF'. They can hang this tool. Use python -c, existing scripts, or the editor tool instead.
 * Please avoid commands that may produce a very large amount of output.
@@ -25,87 +28,6 @@ def tool_info():
             "required": ["command"]
         }
     }
-
-class BashSession:
-    """A session of a bash shell."""
-    def __init__(self):
-        self._started = False
-        self._process = None
-        self._timed_out = False
-        self._timeout = 120.0  # seconds
-        self._sentinel = "<<exit>>"
-        self._output_delay = 0.2  # seconds
-
-    async def start(self):
-        if self._started:
-            return
-        self._process = await asyncio.create_subprocess_shell(
-            "/bin/bash -i",
-            preexec_fn=os.setsid,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=os.environ.copy()  # Ensures inheritance of the current environment
-        )
-        self._started = True
-
-    def stop(self):
-        if not self._started:
-            return
-        if self._process.returncode is None:
-            self._process.terminate()
-        self._process = None
-        self._started = False
-
-    async def run(self, command):
-        if not self._started:
-            raise ValueError("Session has not started.")
-        if self._process.returncode is not None:
-            raise ValueError(f"Bash has exited with returncode {self._process.returncode}")
-        if self._timed_out:
-            raise ValueError(
-                f"Timed out: bash has not returned in {self._timeout} seconds and must be restarted."
-            )
-
-        # Send command
-        self._process.stdin.write(
-            command.encode() + f"\necho '{self._sentinel}'\n".encode()
-        )
-        await self._process.stdin.drain()
-
-        # Read output until sentinel
-        try:
-            output = ''
-            start_time = asyncio.get_event_loop().time()
-
-            while True:
-                if asyncio.get_event_loop().time() - start_time > self._timeout:
-                    self._timed_out = True
-                    raise ValueError(
-                        f"Timed out: bash has not returned in {self._timeout} seconds and must be restarted."
-                    )
-
-                await asyncio.sleep(self._output_delay)
-                # Read from the internal buffer
-                stdout_data = self._process.stdout._buffer.decode(errors='ignore')
-                stderr_data = self._process.stderr._buffer.decode(errors='ignore')
-
-                if self._sentinel in stdout_data:
-                    output = stdout_data[: stdout_data.index(self._sentinel)]
-                    break
-
-            # Clear buffers
-            self._process.stdout._buffer.clear()
-            self._process.stderr._buffer.clear()
-
-            output = output.strip()
-            error = stderr_data.strip()
-
-            return output, error
-
-        except Exception as e:
-            self._timed_out = True
-            raise ValueError(str(e))
 
 def filter_error(error):
     # Filter out errors that we do not want to see
@@ -130,44 +52,37 @@ def filter_error(error):
         i += 1
     return '\n'.join(filtered_lines).strip()
 
-async def tool_function_call(command):
-    """Execute a command in the bash shell."""
+def tool_function(command):
+    """Execute a command in a fresh bash shell."""
     try:
-        if "<<" in command:
-            result = subprocess.run(
-                ["/bin/bash", "-lc", command],
-                capture_output=True,
-                text=True,
-                timeout=120.0,
-                env=os.environ.copy(),
-            )
-            output = result.stdout.strip()
-            error = filter_error(result.stderr.strip())
-            response = ""
-            if output:
-                response += output
-            if error:
-                response += "\nError:\n" + error
-            return response.strip()
-
-        bash_session = BashSession()
-
-        if not bash_session._started:
-            await bash_session.start()
-
-        output, error = await bash_session.run(command)
-        error = filter_error(error)
-        result = ""
+        result = subprocess.run(
+            ["/bin/bash", "-lc", command],
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SECONDS,
+            env=os.environ.copy(),
+        )
+        output = result.stdout.strip()
+        error = filter_error(result.stderr.strip())
+        response = ""
         if output:
-            result += output
+            response += output
         if error:
-            result += "\nError:\n" + error
-        return result.strip()
+            response += ("\n" if response else "") + "Error:\n" + error
+        return response.strip()
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or "").strip()
+        error = filter_error((exc.stderr or "").strip())
+        response = ""
+        if output:
+            response += output
+        if error:
+            response += ("\n" if response else "") + "Error:\n" + error
+        timeout_error = f"Timed out: bash has not returned in {TIMEOUT_SECONDS} seconds."
+        response += ("\n" if response else "") + "Error:\n" + timeout_error
+        return response.strip()
     except Exception as e:
         return f"Error: {str(e)}"
-
-def tool_function(command):
-    return asyncio.run(tool_function_call(command))
 
 if __name__ == "__main__":
     # Example usage
@@ -179,6 +94,6 @@ if __name__ == "__main__":
     else:
         # Extract the command from the command-line arguments
         input_command = ' '.join(sys.argv[1:])
-        # Run the tool_function asynchronously
+        # Run the tool function
         result = tool_function(input_command)
         print(result)
