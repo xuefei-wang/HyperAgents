@@ -32,6 +32,7 @@ Override model settings with environment variables:
 ```bash
 HYPERAGENTS_TASK_MODEL=openai/gpt-5.4-mini
 HYPERAGENTS_POLYGLOT_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_META_MODEL=openai/gpt-5.4-mini
 HYPERAGENTS_REASONING_EFFORT=medium
 ```
 
