@@ -101,7 +101,7 @@ def _runtime_environment():
     return {key: os.environ[key] for key in keys if os.environ.get(key)}
 
 
-def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, num_samples=-1):
+def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, num_samples=-1, max_workers=10):
     # NOTE: the harness for polyglot is different because each task instance needs a docker container
     from domains.polyglot.harness import harness as harness_polyglot
     from domains.polyglot.report import report as report_polyglot
@@ -119,7 +119,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
         dnames = harness_polyglot(
             test_task_list=test_task_list,
             num_samples=-1,
-            max_workers=10,
+            max_workers=max_workers,
             model_name_or_path=model_name_or_path,
             model_patch_paths=patch_files,
             num_evals=1,
@@ -135,11 +135,11 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
     # Check if additional evaluation should be run
     if run_next_eval:
         test_task_list_more = load_json_file(str(POLYGLOT_MEDIUM_TASK_MAP))
-        task_list = test_task_list + test_task_list_more
+        task_list = list(test_task_list_more)
         dnames = harness_polyglot(
             test_task_list=task_list,
             num_samples=num_samples,
-            max_workers=10,
+            max_workers=max_workers,
             model_name_or_path=model_name_or_path,
             model_patch_paths=patch_files,
             num_evals=1,
@@ -159,7 +159,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
     update_node_metadata(output_dir, genid, {"run_full_eval": run_next_eval})
 
 
-def run_harness_swebench_pro(root_dir, output_dir, genid, num_samples=-1):
+def run_harness_swebench_pro(root_dir, output_dir, genid, num_samples=-1, max_workers=6):
     from domains.swebench_pro.harness import harness as harness_swebench_pro
     from domains.swebench_pro.report import report as report_swebench_pro
     from domains.swebench_pro.constants import SWEBENCH_PRO_DEFAULT_TASK_MAP
@@ -173,7 +173,7 @@ def run_harness_swebench_pro(root_dir, output_dir, genid, num_samples=-1):
     harness_swebench_pro(
         test_task_list=task_ids,
         num_samples=num_samples,
-        max_workers=6,
+        max_workers=max_workers,
         model_name_or_path=model_name_or_path,
         model_patch_paths=patch_files,
         pred_dname=eval_output_dir,
@@ -942,9 +942,22 @@ def generate_loop(
             )
             print(f"generate_loop: generation 0 completed, parent None")
             if metadata["run_eval"] and "polyglot" in domains:
-                run_harness_polyglot(root_dir, output_dir, 0, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+                run_harness_polyglot(
+                    root_dir,
+                    output_dir,
+                    0,
+                    skip_staged_eval=skip_staged_eval,
+                    num_samples=eval_samples[domains.index("polyglot")],
+                    max_workers=eval_workers,
+                )
             if metadata["run_eval"] and "swebench_pro" in domains:
-                run_harness_swebench_pro(root_dir, output_dir, 0, num_samples=eval_samples[domains.index("swebench_pro")])
+                run_harness_swebench_pro(
+                    root_dir,
+                    output_dir,
+                    0,
+                    num_samples=eval_samples[domains.index("swebench_pro")],
+                    max_workers=eval_workers,
+                )
             for arc_domain in ("arc1", "arc2"):
                 if metadata["run_eval"] and arc_domain in domains:
                     run_harness_arc(root_dir, output_dir, 0, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
@@ -1008,9 +1021,22 @@ def generate_loop(
             print(f"generate_loop: generation 0 completed, parent None")
             # Evaluate the agent on polyglot if needed
             if metadata["run_eval"] and "polyglot" in domains:
-                run_harness_polyglot(root_dir, output_dir, 0, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+                run_harness_polyglot(
+                    root_dir,
+                    output_dir,
+                    0,
+                    skip_staged_eval=skip_staged_eval,
+                    num_samples=eval_samples[domains.index("polyglot")],
+                    max_workers=eval_workers,
+                )
             if metadata["run_eval"] and "swebench_pro" in domains:
-                run_harness_swebench_pro(root_dir, output_dir, 0, num_samples=eval_samples[domains.index("swebench_pro")])
+                run_harness_swebench_pro(
+                    root_dir,
+                    output_dir,
+                    0,
+                    num_samples=eval_samples[domains.index("swebench_pro")],
+                    max_workers=eval_workers,
+                )
             for arc_domain in ("arc1", "arc2"):
                 if metadata["run_eval"] and arc_domain in domains:
                     run_harness_arc(root_dir, output_dir, 0, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
@@ -1100,9 +1126,22 @@ def generate_loop(
 
         # Evaluate the agent on polyglot if needed
         if metadata["run_eval"] and "polyglot" in domains:
-            run_harness_polyglot(root_dir, output_dir, current_genid, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+            run_harness_polyglot(
+                root_dir,
+                output_dir,
+                current_genid,
+                skip_staged_eval=skip_staged_eval,
+                num_samples=eval_samples[domains.index("polyglot")],
+                max_workers=eval_workers,
+            )
         if metadata["run_eval"] and "swebench_pro" in domains:
-            run_harness_swebench_pro(root_dir, output_dir, current_genid, num_samples=eval_samples[domains.index("swebench_pro")])
+            run_harness_swebench_pro(
+                root_dir,
+                output_dir,
+                current_genid,
+                num_samples=eval_samples[domains.index("swebench_pro")],
+                max_workers=eval_workers,
+            )
         for arc_domain in ("arc1", "arc2"):
             if metadata["run_eval"] and arc_domain in domains:
                 run_harness_arc(root_dir, output_dir, current_genid, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)

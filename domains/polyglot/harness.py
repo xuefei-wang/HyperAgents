@@ -76,6 +76,11 @@ def _normalize_dataset_repo_paths(dataset):
 def get_eval_script(commands):
     return "\n".join(["#!/bin/bash", "set -uxo pipefail"] + commands) + "\n"
 
+
+def _report_path(output_dir, model_name_or_path, eval_idx=0):
+    return Path(output_dir) / f"{model_name_or_path.replace('/', '__')}_{eval_idx}.000.json"
+
+
 def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_dir):
     """
     Process a single dataset entry. This function encapsulates the main processing logic
@@ -451,11 +456,7 @@ def harness(
     }
 
     print(report)
-    report_file = output_dir / Path(
-        model_name_or_path.replace("/", "__") + f"_{0}"
-        + f".{000}"
-        + ".json"
-    )
+    report_file = _report_path(output_dir, model_name_or_path, eval_idx=0)
     with open(report_file, "w") as f:
         print(json.dumps(report, indent=4), file=f)
     print(f"Report written to {report_file}")
