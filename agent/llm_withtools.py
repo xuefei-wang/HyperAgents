@@ -64,7 +64,8 @@ def check_for_tool_uses(response):
     Checks if the response contains one or more tool calls in json code blocks.
     Returns a list of tool use dictionaries.
     """
-    pattern = r'<json>\s*(\{.*?\})\s*</json>'
+    # Make </json> optional — some models (e.g. gpt-5.4-mini) omit the closing tag
+    pattern = r'<json>\s*(\{.*?\})\s*(?:</json>)?'
     matches = re.findall(pattern, response, re.DOTALL)
     tool_uses = []
 

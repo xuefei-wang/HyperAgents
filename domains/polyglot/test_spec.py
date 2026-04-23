@@ -21,10 +21,36 @@ from domains.polyglot.dockerfiles import (
     get_dockerfile_env,
     get_dockerfile_instance,
 )
-from swebench.harness.utils import (
-    get_requirements,
-    get_environment_yml,
-)
+# Polyglot exercises don't use requirements.txt / environment.yml install
+# specs, so we only need lightweight local implementations of these helpers.
+# Importing them from upstream `swebench` would pull in many optional deps
+# (bs4, ghapi, datasets, etc.) just to satisfy unused codepaths.
+def get_requirements(instance) -> str:
+    repo = instance.get("repo") if isinstance(instance, dict) else None
+    if not repo:
+        return ""
+    for candidate in ("requirements.txt", "requirements-dev.txt"):
+        path = re.sub(r"//+", "/", f"{repo}/{candidate}")
+        try:
+            with open(path, "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            continue
+    return ""
+
+
+def get_environment_yml(instance, env_name: str) -> str:
+    repo = instance.get("repo") if isinstance(instance, dict) else None
+    if not repo:
+        return ""
+    for candidate in ("environment.yml", "environment.yaml"):
+        path = re.sub(r"//+", "/", f"{repo}/{candidate}")
+        try:
+            with open(path, "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            continue
+    return ""
 
 DIFF_MODIFIED_FILE_REGEX = r"--- a/(.*)"
 

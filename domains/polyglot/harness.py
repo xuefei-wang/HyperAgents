@@ -30,7 +30,7 @@ from domains.polyglot.utils import (
 def get_eval_script(commands):
     return "\n".join(["#!/bin/bash", "set -uxo pipefail"] + commands) + "\n"
 
-def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_dir):
+def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_dir, model_name="o3-mini"):
     """
     Process a single dataset entry. This function encapsulates the main processing logic
     for each entry to make it suitable for parallel execution.
@@ -117,7 +117,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             "--outdir", f"/{REPO_NAME}/",
             "--test_description", test_description,
             "--language", entry['language'],
-            "--model", "o3-mini",
+            "--model", model_name,
         ]
         exec_result = container.exec_run(cmd, environment=env_vars, workdir='/testbed/')
         log_container_output(exec_result)
@@ -245,6 +245,7 @@ def harness(
         pred_dname='./outputs',
         output_dir='./outputs',
         root_dir=None,
+        model_name="o3-mini",
     ):
     """
     Parallel processing harness using ThreadPoolExecutor.
@@ -281,7 +282,7 @@ def harness(
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         model_name_or_path = timestamp
     pred_dname = Path(pred_dname)
-    pred_dname.mkdir(exist_ok=True)
+    pred_dname.mkdir(parents=True, exist_ok=True)
     out_dnames = []
     
     # Prepare the dataset entries
@@ -308,7 +309,7 @@ def harness(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             future_to_entry = {
-                executor.submit(process_entry, entry, out_dname, model_name_or_path_inst, model_patch_paths, root_dir): entry
+                executor.submit(process_entry, entry, out_dname, model_name_or_path_inst, model_patch_paths, root_dir, model_name): entry
                 for entry in entries
             }
             
@@ -394,6 +395,7 @@ def main():
     parser.add_argument("--num_evals_parallel", type=int, default=1, help="Number of parallel repeated evaluations")
     parser.add_argument("--output_dir", type=str, default="./outputs", help="Output directory")
     parser.add_argument("--subset", type=str, default="small", help="Dataset subset")
+    parser.add_argument("--model_name", type=str, default="o3-mini", help="LLM model for task agent")
     args = parser.parse_args()
 
     if args.subset == "small":
@@ -421,6 +423,7 @@ def main():
         num_evals_parallel=args.num_evals_parallel,
         pred_dname=args.output_dir,
         output_dir=args.output_dir,
+        model_name=args.model_name,
     )
 
 if __name__ == "__main__":

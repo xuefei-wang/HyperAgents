@@ -7,11 +7,25 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import docker
-from analysis.plot_progress import plot_progress_single, plot_progress_together
-from analysis.visualize_archive import (
-    visualize_archive_single,
-    visualize_archive_together,
-)
+
+try:
+    from analysis.plot_progress import plot_progress_single, plot_progress_together
+    from analysis.visualize_archive import (
+        visualize_archive_single,
+        visualize_archive_together,
+    )
+except (ModuleNotFoundError, ImportError, ValueError):
+    def plot_progress_single(*args, **kwargs):
+        return None
+
+    def plot_progress_together(*args, **kwargs):
+        return None
+
+    def visualize_archive_single(*args, **kwargs):
+        return None
+
+    def visualize_archive_together(*args, **kwargs):
+        return None
 
 from utils.common import file_exist_and_not_empty, load_json_file
 from utils.constants import REPO_NAME
@@ -46,7 +60,7 @@ from utils.gl_utils import (
 )
 
 
-def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, num_samples=-1):
+def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, num_samples=-1, task_model="o3-mini"):
     # NOTE: the harness for polyglot is different because each task instance needs a docker container
     from domains.polyglot.harness import harness as harness_polyglot
     from domains.polyglot.report import report as report_polyglot
@@ -62,7 +76,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
         test_task_list = load_json_file("./domains/polyglot/subsets/small.json")
         dnames = harness_polyglot(
             test_task_list=test_task_list,
-            num_samples=-1,
+            num_samples=num_samples,
             max_workers=10,
             model_name_or_path=model_name_or_path,
             model_patch_paths=patch_files,
@@ -71,6 +85,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
             pred_dname=eval_output_dir,
             output_dir=eval_output_dir,
             root_dir=root_dir,
+            model_name=task_model,
         )
         report_polyglot(output_dir=eval_output_dir, run_keyword=model_name_or_path, expected_num_tasks=len(test_task_list))
         stagedeval_score = get_score("polyglot", output_dir, genid)
@@ -90,6 +105,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
             pred_dname=eval_output_dir,
             output_dir=eval_output_dir,
             root_dir=root_dir,
+            model_name=task_model,
         )
         report_polyglot(output_dir=eval_output_dir, run_keyword=model_name_or_path, expected_num_tasks=len(test_task_list + test_task_list_more))
 
@@ -445,6 +461,7 @@ def generate(
     skip_staged_eval=False,
     edit_select_parent=False,
     max_generation=None,
+    task_model="o3-mini",
 ):
     # Setup local output folder
     prev_gen_dir = os.path.join(output_dir, f"gen_{parent_genid}")
@@ -584,8 +601,8 @@ def generate(
                     "--iterations_left",
                     str(max_generation - current_genid),
                     *(
-                        # If domain is polyglot, for a fair comparison with DGM
-                        ["--model", "claude-3-5-sonnet-20241022"] if domains == ["polyglot"] else []
+                        # Pass task_model to meta agent
+                        ["--model", task_model]
                     ),
                 ]
 
@@ -594,7 +611,11 @@ def generate(
                 if run_baseline and "no_selfimprove" in run_baseline
                 else f"/{REPO_NAME}"
             )
-            exec_result = container.exec_run(cmd=command, workdir=run_workdir)
+            env_vars = {
+                "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
+                "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+            }
+            exec_result = container.exec_run(cmd=command, workdir=run_workdir, environment=env_vars)
             log_container_output(exec_result)
             metadata["parent_agent_success"] = exec_result.exit_code == 0
 
@@ -736,6 +757,7 @@ def generate_loop(
     eval_test=False,
     skip_staged_eval=False,
     edit_select_parent=False,
+    task_model="o3-mini",
 ):
     # Initialization
     docker_client = docker.DockerClient()
@@ -840,11 +862,12 @@ def generate_loop(
                 skip_staged_eval=skip_staged_eval,
                 edit_select_parent=edit_select_parent,
                 max_generation=max_generation,
+                task_model=task_model,
             )
             print(f"generate_loop: generation 0 completed, parent None")
             # Evaluate the agent on polyglot if needed
             if "polyglot" in domains:
-                run_harness_polyglot(root_dir, output_dir, 0, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+                run_harness_polyglot(root_dir, output_dir, 0, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")], task_model=task_model)
 
         # Evaluate the entire archive as an ensemble
         eval_ensemble = (
@@ -919,6 +942,7 @@ def generate_loop(
             skip_staged_eval=skip_staged_eval,
             edit_select_parent=edit_select_parent,
             max_generation=max_generation,
+            task_model=task_model,
         )
 
         # NOTE: need to update and save archive before running ensembling eval
@@ -930,7 +954,7 @@ def generate_loop(
 
         # Evaluate the agent on polyglot if needed
         if "polyglot" in domains:
-            run_harness_polyglot(root_dir, output_dir, current_genid, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+            run_harness_polyglot(root_dir, output_dir, current_genid, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")], task_model=task_model)
 
         # Evaluate the entire archive as an ensemble
         eval_ensemble = (
@@ -1151,6 +1175,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to allow the agent to edit the selection mechanism",
     )
+    parser.add_argument(
+        "--task_model",
+        type=str,
+        default="o3-mini",
+        help="LLM model for task agent and meta agent (default: o3-mini)",
+    )
     args = parser.parse_args()
 
     # Post-parse validation
@@ -1186,4 +1216,5 @@ if __name__ == "__main__":
         eval_test=args.eval_test,
         skip_staged_eval=args.skip_staged_eval,
         edit_select_parent=args.edit_select_parent,
+        task_model=args.task_model,
     )
