@@ -87,10 +87,13 @@ def report(output_dir, run_keyword="eval_run", expected_num_items=None):
     total_tasks = int(official_results.get("total_tasks", 0))
     score = float(official_results.get("score", 0.0))
     accuracy = score / total_tasks if total_tasks > 0 else 0.0
+    scorer = official_results.get("scorer", "official_arc_agi_benchmarking")
 
     report_data = {
         "accuracy_score": accuracy,
         "score": score,
+        "scorer": scorer,
+        "official_scorer": scorer != "local_exact_match_fallback",
         "total_tasks": total_tasks,
         "total_pair_items": expected_num_items if expected_num_items is not None else len(task_results),
         "submitted_pair_items": len(task_results),

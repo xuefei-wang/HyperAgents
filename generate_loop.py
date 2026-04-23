@@ -167,7 +167,12 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
             output_dir=eval_output_dir,
             root_dir=root_dir,
         )
-        report_polyglot(output_dir=eval_output_dir, run_keyword=model_name_or_path, expected_num_tasks=len(task_list))
+        expected_num_tasks = min(num_samples, len(task_list)) if num_samples > 0 else len(task_list)
+        report_polyglot(
+            output_dir=eval_output_dir,
+            run_keyword=model_name_or_path,
+            expected_num_tasks=expected_num_tasks,
+        )
 
     # Update metadata
     update_node_metadata(output_dir, genid, {"run_full_eval": run_next_eval})

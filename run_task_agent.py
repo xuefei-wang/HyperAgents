@@ -9,14 +9,21 @@ from utils.git_utils import diff_versus_commit
 
 
 def _load_shared_env() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
+    task_agent_path = Path(__file__).resolve()
+    parent_candidates = list(task_agent_path.parents)
     env_paths = [
-        repo_root / "configs" / "providers" / ".env.shared",
-        repo_root / "configs" / "models" / "shared.env",
+        root / relative_path
+        for root in [*(parent_candidates[idx] for idx in (1, 2) if idx < len(parent_candidates)), Path.cwd()]
+        for relative_path in (
+            Path("configs") / "providers" / ".env.shared",
+            Path("configs") / "models" / "shared.env",
+        )
     ]
+    loaded = set()
     for env_path in env_paths:
-        if env_path.exists():
+        if env_path.exists() and env_path not in loaded:
             load_dotenv(env_path, override=True)
+            loaded.add(env_path)
 
 
 def _default_model_for_domain(domain):

@@ -10,10 +10,9 @@ import json
 
 def _load_shared_env() -> None:
     llm_path = Path(__file__).resolve()
+    parent_candidates = list(llm_path.parents)
     candidate_roots = [
-        llm_path.parents[1],  # HyperAgents repo root, if configs are copied in.
-        llm_path.parents[2],  # Parent baseline directory.
-        llm_path.parents[3],  # Repository root when HyperAgents lives under baselines/.
+        *(parent_candidates[idx] for idx in (1, 2, 3) if idx < len(parent_candidates)),
         Path.cwd(),
     ]
     loaded = set()

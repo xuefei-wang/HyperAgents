@@ -429,7 +429,7 @@ def harness(
                 error_ids.append(result["instance_id"])
 
     report = {
-        "total_instances": len(dataset),
+        "total_instances": len(entries),
         "submitted_instances": len(results),
         "completed_instances": len(completed_ids),
         "resolved_instances": len(resolved_ids),

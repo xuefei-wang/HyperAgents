@@ -148,6 +148,16 @@ def _prediction_document(payload: dict, prediction_grid: list[list[int]] | None 
     }
 
 
+def _missing_prediction_document(payload: dict) -> dict:
+    return {
+        "benchmark": payload["benchmark"],
+        "task_id": payload["task_id"],
+        "pair_index": payload["pair_index"],
+        "missing_prediction": True,
+        "attempts": [],
+    }
+
+
 def _grid_shape(grid: list[list[int]]) -> str:
     return f"{len(grid)} rows x {len(grid[0]) if grid else 0} cols"
 
@@ -411,15 +421,8 @@ def _load_prediction_from_patch(patch_text: str) -> dict:
 
 
 def _write_missing_prediction(entry: dict, prediction_path: Path) -> None:
-    payload = {
-        "benchmark": entry["benchmark"],
-        "task_id": entry["task_id"],
-        "pair_index": entry["pair_index"],
-        "attempts": [
-            {"attempt_index": 1, "prediction": []},
-            {"attempt_index": 2, "prediction": []},
-        ],
-    }
+    task_payload = load_json_file(entry["payload_file"])
+    payload = _missing_prediction_document(task_payload)
     prediction_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
@@ -678,9 +681,105 @@ def _run_converter(predictions_dir: Path, submissions_dir: Path, manifest_path: 
     subprocess.run(cmd, check=True)
 
 
+def _attempt_sort_key(name: str) -> tuple[int, str]:
+    if name.startswith("attempt_"):
+        try:
+            return (int(name.rsplit("_", 1)[1]), name)
+        except ValueError:
+            pass
+    return (10_000, name)
+
+
+def _score_submission_pair(pair_submission: object, expected_output: object) -> tuple[bool, int, int, list[dict]]:
+    if not isinstance(pair_submission, dict):
+        return False, 0, 0, []
+
+    submitted_trials = 0
+    correct_trials = 0
+    attempts = []
+    for attempt_name in sorted(pair_submission, key=_attempt_sort_key):
+        attempt_payload = pair_submission[attempt_name]
+        if not isinstance(attempt_payload, dict) or "answer" not in attempt_payload:
+            continue
+        submitted_trials += 1
+        is_correct = attempt_payload["answer"] == expected_output
+        correct_trials += int(is_correct)
+        attempts.append(
+            {
+                "attempt": attempt_name,
+                "correct": is_correct,
+            }
+        )
+    return correct_trials > 0, submitted_trials, correct_trials, attempts
+
+
+def _run_local_scorer(benchmark: str, submissions_dir: Path, results_dir: Path) -> None:
+    task_dir = ARC_TASK_DIRS[benchmark]
+    task_details = []
+    task_score = 0
+    total_attempts = 0
+    total_correct_trials = 0
+
+    for submission_file in sorted(submissions_dir.glob("*.json")):
+        task_id = submission_file.stem
+        task_file = task_dir / f"{task_id}.json"
+        task_payload = load_json_file(task_file)
+        submission = load_json_file(submission_file)
+        test_cases = task_payload.get("test", [])
+        pair_details = []
+        task_correct = isinstance(submission, list) and len(submission) >= len(test_cases)
+
+        for pair_index, test_case in enumerate(test_cases):
+            expected_output = test_case.get("output")
+            pair_submission = submission[pair_index] if isinstance(submission, list) and pair_index < len(submission) else None
+            pair_correct, submitted_trials, correct_trials, attempts = _score_submission_pair(
+                pair_submission,
+                expected_output,
+            )
+            total_attempts += submitted_trials
+            total_correct_trials += correct_trials
+            task_correct = task_correct and pair_correct
+            pair_details.append(
+                {
+                    "pair_index": pair_index,
+                    "correct": pair_correct,
+                    "submitted_trials": submitted_trials,
+                    "correct_trials": correct_trials,
+                    "attempts": attempts,
+                }
+            )
+
+        task_score += int(task_correct)
+        task_details.append(
+            {
+                "task_id": task_id,
+                "correct": task_correct,
+                "pairs": pair_details,
+            }
+        )
+
+    results = {
+        "score": task_score,
+        "total_tasks": len(task_details),
+        "total_attempts": total_attempts,
+        "total_submitted_trials": total_attempts,
+        "total_correct_trials": total_correct_trials,
+        "scorer": "local_exact_match_fallback",
+        "tasks": task_details,
+    }
+    results_dir.mkdir(parents=True, exist_ok=True)
+    (results_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+
+
 def _run_official_scorer(benchmark: str, submissions_dir: Path, results_dir: Path) -> None:
+    if not ARC_BENCHMARKING_SRC.is_dir():
+        _run_local_scorer(benchmark, submissions_dir, results_dir)
+        return
+
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(ARC_BENCHMARKING_SRC)
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in [str(ARC_BENCHMARKING_SRC), env.get("PYTHONPATH", "")] if part
+    )
     subprocess.run(
         [
             sys.executable,

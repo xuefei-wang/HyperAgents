@@ -33,13 +33,16 @@ def get_all_performance(run_keyword, results_dir='./outputs', expected_num_tasks
     total_unresolved_ids = []
     total_resolved_ids = []
     total_emptypatch_ids = []
+    total_reported_instances = 0
     for file_name in matching_files:
         eval_agent_path = os.path.join(results_dir, file_name)
         eval_results = load_json_file(eval_agent_path)
         resolved_instances = eval_results.get('resolved_instances', 0)
         submitted_instances = eval_results.get('submitted_instances', 0)
+        reported_instances = eval_results.get('total_instances', 0)
         total_resolved_instances += resolved_instances
         total_submitted_instances += submitted_instances
+        total_reported_instances += reported_instances if isinstance(reported_instances, int) else 0
         accuracy_score = resolved_instances / submitted_instances if submitted_instances > 0 else 0
         performance_results.append({'file': file_name, 'accuracy_score': accuracy_score, **eval_results})
         total_unresolved_ids.extend(eval_results.get('unresolved_ids', []))
@@ -48,7 +51,12 @@ def get_all_performance(run_keyword, results_dir='./outputs', expected_num_tasks
 
     # Calculate the overall accuracy score
     overall_performance = {}
-    total_instances = expected_num_tasks if expected_num_tasks is not None else total_submitted_instances
+    if expected_num_tasks is not None:
+        total_instances = expected_num_tasks
+        if total_reported_instances > 0:
+            total_instances = min(total_instances, total_reported_instances)
+    else:
+        total_instances = total_reported_instances or total_submitted_instances
     overall_performance['accuracy_score'] = total_resolved_instances / total_instances if total_instances > 0 else 0
     overall_performance['total_resolved_instances'] = total_resolved_instances
     overall_performance['total_submitted_instances'] = total_submitted_instances
