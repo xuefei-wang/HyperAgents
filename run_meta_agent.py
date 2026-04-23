@@ -56,6 +56,7 @@ def main():
         repo_path=args.repo_path,
         eval_path=args.evals_folder,
         iterations_left=args.iterations_left,
+        base_commit=args.base_commit,
     )
 
     # Reset unwanted diffs
