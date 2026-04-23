@@ -33,26 +33,47 @@ def get_all_performance(run_keyword, results_dir='./outputs', expected_num_tasks
     total_unresolved_ids = []
     total_resolved_ids = []
     total_emptypatch_ids = []
+    total_benchmark_instances = 0
     for file_name in matching_files:
         eval_agent_path = os.path.join(results_dir, file_name)
         eval_results = load_json_file(eval_agent_path)
         resolved_instances = eval_results.get('resolved_instances', 0)
         submitted_instances = eval_results.get('submitted_instances', 0)
+        # `benchmark_total_instances` was introduced alongside the subset-aware
+        # `total_instances` semantics (see run_evaluation.py / harness.py).
+        # Fall back to the old `total_instances` for artifacts written before
+        # that change so historical reports still aggregate cleanly. After the
+        # fix, per-file `total_instances` == `submitted_instances`, so the
+        # fallback collapses to submitted_instances for fresh runs.
+        reported_instances = eval_results.get('total_instances', 0)
+        benchmark_instances = eval_results.get(
+            'benchmark_total_instances',
+            reported_instances if isinstance(reported_instances, int) else 0,
+        )
         total_resolved_instances += resolved_instances
         total_submitted_instances += submitted_instances
+        total_benchmark_instances += benchmark_instances if isinstance(benchmark_instances, int) else 0
         accuracy_score = resolved_instances / submitted_instances if submitted_instances > 0 else 0
         performance_results.append({'file': file_name, 'accuracy_score': accuracy_score, **eval_results})
         total_unresolved_ids.extend(eval_results.get('unresolved_ids', []))
         total_emptypatch_ids.extend(eval_results.get('empty_patch_ids', []))
         total_resolved_ids.extend(eval_results.get('resolved_ids', []))
 
-    # Calculate the overall accuracy score
+    # Calculate the overall accuracy score.
+    #
+    # `total_instances` represents instances actually attempted in this run
+    # (subset-aware). `benchmark_total_instances` preserves the original
+    # full-benchmark cardinality for downstream analyses that need it.
+    # `expected_num_tasks`, when supplied, is a hint for the expected attempted
+    # count (e.g., a 3-task subset smoke passes 3) — NOT the full benchmark
+    # size.
     overall_performance = {}
     total_instances = expected_num_tasks if expected_num_tasks is not None else total_submitted_instances
     overall_performance['accuracy_score'] = total_resolved_instances / total_instances if total_instances > 0 else 0
     overall_performance['total_resolved_instances'] = total_resolved_instances
     overall_performance['total_submitted_instances'] = total_submitted_instances
     overall_performance['total_instances'] = total_instances
+    overall_performance['benchmark_total_instances'] = total_benchmark_instances
     overall_performance['files'] = matching_files
     overall_performance['total_unresolved_ids'] = total_unresolved_ids
     overall_performance['total_emptypatch_ids'] = total_emptypatch_ids
