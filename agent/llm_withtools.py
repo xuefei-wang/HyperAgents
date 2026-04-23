@@ -166,10 +166,15 @@ def check_for_tool_uses(response):
     Returns a list of tool use dictionaries.
     """
     tool_uses = []
+    stripped_response = response.strip()
+    allow_raw_json_tool_use = stripped_response.startswith("{") and stripped_response.endswith("}")
+    allow_structured_tool_use = _looks_like_structured_json_block(response) or allow_raw_json_tool_use
     extracted_jsons = extract_jsons(response) or []
-    allow_editor_recovery = _looks_like_structured_json_block(response)
+    allow_editor_recovery = allow_structured_tool_use
     for tool_use in extracted_jsons:
         if _is_valid_tool_use(tool_use):
+            if not allow_structured_tool_use:
+                continue
             tool_uses.append(
                 {
                     "tool_name": tool_use["tool_name"].strip(),
