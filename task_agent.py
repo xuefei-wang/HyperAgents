@@ -333,7 +333,12 @@ Use integer colors 0 through 9. Each attempt must be non-empty, rectangular, and
                 )
                 self._materialize_arc_prediction(inputs, new_msg_history)
             if os.path.exists(prediction_path) and os.path.getsize(prediction_path) > 0:
-                review_instruction = f"""A prediction file now exists at `{prediction_path}`.
+                valid_prediction, reason = self._arc_prediction_file_valid(prediction_path)
+                if valid_prediction:
+                    self.log(f"Valid ARC prediction ready at {prediction_path}; skipping extra review pass.")
+                else:
+                    self.log(f"ARC prediction requires another pass: {reason}")
+                    review_instruction = f"""A prediction file now exists at `{prediction_path}`.
 
 Review it as an ARC visual reasoning answer using only the public training pairs and `test_input`.
 
@@ -345,15 +350,15 @@ Consistency check:
 - Is each attempt non-empty, rectangular, and at most 30x30?
 
 If the current prediction is inconsistent, revise `{prediction_path}`. If it is consistent, leave it unchanged. Validate with `cd {inputs['git_tempdir']} && python3 tools/validate_prediction.py prediction.json`. Do not print the full prediction file."""
-                new_msg_history = chat_with_agent(
-                    review_instruction,
-                    model=self.model,
-                    msg_history=new_msg_history,
-                    logging=self.log,
-                    tools_available=tools_available,
-                    return_on_error=True,
-                )
-                self._materialize_arc_prediction(inputs, new_msg_history)
+                    new_msg_history = chat_with_agent(
+                        review_instruction,
+                        model=self.model,
+                        msg_history=new_msg_history,
+                        logging=self.log,
+                        tools_available=tools_available,
+                        return_on_error=True,
+                    )
+                    self._materialize_arc_prediction(inputs, new_msg_history)
             if not self._materialize_arc_prediction(inputs, new_msg_history):
                 final_json_instruction = f"""No valid `prediction.json` remains in `{inputs['git_tempdir']}`.
 

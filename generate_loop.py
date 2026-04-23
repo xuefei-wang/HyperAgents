@@ -513,7 +513,7 @@ def copy_prev_eval_to_container(
         f"find '{container_prev_eval_path}' -type d -name '*_eval_val*' -prune -exec rm -rf {{}} +",
         f"find '{container_prev_eval_path}' -type d -name '*_eval_test*' -prune -exec rm -rf {{}} +",
         # 2) Remove any directories containing the repo name (copied worktrees, etc.)
-        f"find '{container_prev_eval_path}' -type d -name '*{REPO_NAME}*' -prune -exec rm -rf {{}} +",
+        f"find '{container_prev_eval_path}' -mindepth 1 -type d -name '*{REPO_NAME}*' -prune -exec rm -rf {{}} +",
         # 3) Remove compiled Python files
         f"find '{container_prev_eval_path}' -type f -name '*.pyc' -delete",
         # 4) Remove files whose base name indicates val/test (with/without extensions)

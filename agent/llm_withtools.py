@@ -1,7 +1,15 @@
-import re
 import json
+import re
 
-from agent.llm import get_response_from_llm
+import litellm
+
+from agent.llm import (
+    _extract_response_info,
+    _is_openai_reasoning_model,
+    _openai_reasoning_effort,
+    _supports_custom_temperature,
+    get_response_from_llm,
+)
 from agent.tools import load_tools
 from utils.common import extract_jsons
 
@@ -112,6 +120,187 @@ def process_tool_call(tools_dict, tool_name, tool_input):
     except Exception as e:
         return f"Error executing tool '{tool_name}': {str(e)}"
 
+
+def supports_native_tool_calling(model):
+    normalized = (model or "").lower()
+    return (
+        normalized.startswith("anthropic/")
+        or normalized.startswith("openai/")
+        or normalized.startswith(("gpt-", "o1", "o3", "o4"))
+    )
+
+
+def convert_tool_info(tool_info):
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_info["name"],
+            "description": tool_info["description"],
+            "parameters": tool_info["input_schema"],
+        },
+    }
+
+
+def _message_content(message):
+    if isinstance(message, dict):
+        return message.get("content")
+    return getattr(message, "content", None)
+
+
+def _message_tool_calls(message):
+    if isinstance(message, dict):
+        return message.get("tool_calls")
+    return getattr(message, "tool_calls", None)
+
+
+def extract_native_tool_calls(message):
+    tool_calls = _message_tool_calls(message) or []
+    normalized_calls = []
+    for tool_call in tool_calls:
+        if isinstance(tool_call, dict):
+            function = tool_call.get("function") or {}
+            call_id = tool_call.get("id")
+            name = function.get("name")
+            arguments = function.get("arguments", "{}")
+        else:
+            function = getattr(tool_call, "function", None)
+            call_id = getattr(tool_call, "id", None)
+            name = getattr(function, "name", None) if function is not None else None
+            arguments = getattr(function, "arguments", "{}") if function is not None else "{}"
+
+        try:
+            parsed_arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed_arguments, dict):
+            continue
+
+        normalized_calls.append(
+            {
+                "id": call_id or f"tool_call_{len(normalized_calls)}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(parsed_arguments),
+                },
+            }
+        )
+    return normalized_calls
+
+
+def to_native_messages(msg_history):
+    messages = []
+    for msg in msg_history:
+        role = msg.get("role")
+        if role == "tool":
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "content": msg.get("text", ""),
+                }
+            )
+            continue
+
+        native_message = {
+            "role": role,
+            "content": msg.get("text", ""),
+        }
+        if msg.get("tool_calls"):
+            native_message["tool_calls"] = msg["tool_calls"]
+            if native_message["content"] == "":
+                native_message["content"] = None
+        messages.append(native_message)
+    return messages
+
+
+def format_tool_output(tool_name, tool_input, tool_output):
+    return f'''<json>
+    {{
+        "tool_name": "{tool_name}",
+        "tool_input": {tool_input},
+        "tool_output": "{tool_output}"
+    }}
+    </json>'''.strip()
+
+
+def chat_with_agent_native(
+    msg,
+    model,
+    msg_history,
+    logging,
+    all_tools,
+    max_tool_calls=40,
+):
+    tools_dict = {tool['info']['name']: tool for tool in all_tools}
+    tools = [convert_tool_info(tool["info"]) for tool in all_tools]
+    new_msg_history = list(msg_history)
+    new_msg_history.append({"role": "user", "text": msg})
+    num_tool_calls = 0
+
+    logging(f"Input: {repr(msg)}")
+
+    while True:
+        completion_kwargs = {
+            "model": model,
+            "messages": to_native_messages(new_msg_history),
+            "tools": tools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+        }
+        if _supports_custom_temperature(model):
+            completion_kwargs["temperature"] = 0.0
+        if _is_openai_reasoning_model(model):
+            completion_kwargs["max_completion_tokens"] = 4096
+        else:
+            completion_kwargs["max_tokens"] = 4096
+        reasoning_effort = _openai_reasoning_effort(model)
+        if reasoning_effort:
+            completion_kwargs["reasoning_effort"] = reasoning_effort
+        response = litellm.completion(**completion_kwargs)
+        info = _extract_response_info(response, model)
+        log_llm_usage(logging, info)
+        message = response["choices"][0]["message"]
+        response_text = _message_content(message) or ""
+        tool_calls = extract_native_tool_calls(message)
+        logging(f"Output: {repr(response_text if response_text else message)}")
+
+        if not tool_calls:
+            new_msg_history.append({"role": "assistant", "text": response_text})
+            return new_msg_history
+
+        if max_tool_calls > 0 and num_tool_calls >= max_tool_calls:
+            logging("Error: Maximum number of tool calls reached.")
+            new_msg_history.append(
+                {
+                    "role": "assistant",
+                    "text": response_text or "Error: Maximum number of tool calls reached.",
+                }
+            )
+            return new_msg_history
+
+        tool_call = tool_calls[0]
+        tool_name = tool_call["function"]["name"]
+        tool_input = json.loads(tool_call["function"]["arguments"])
+        tool_output = process_tool_call(tools_dict, tool_name, tool_input)
+        num_tool_calls += 1
+
+        new_msg_history.append(
+            {
+                "role": "assistant",
+                "text": response_text,
+                "tool_calls": tool_calls,
+            }
+        )
+        new_msg_history.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call["id"],
+                "text": str(tool_output),
+            }
+        )
+        logging(f"Tool output: {repr(format_tool_output(tool_name, tool_input, tool_output))}")
+
 def chat_with_agent(
     msg,
     model="claude-4-sonnet-genai",
@@ -122,15 +311,23 @@ def chat_with_agent(
     max_tool_calls=40,  # Maximum number of tool calls allowed in a single response, -1 for unlimited
     return_on_error=False,  # Return partial history instead of raising provider/tool-loop errors
 ):
-    get_response_fn = get_response_from_llm
-    # Construct message
     if msg_history is None:
         msg_history = []
     new_msg_history = msg_history
 
     try:
-        # Load all tools
         all_tools = load_tools(logging=logging, names=tools_available)
+        if all_tools and supports_native_tool_calling(model):
+            return chat_with_agent_native(
+                msg=msg,
+                model=model,
+                msg_history=msg_history,
+                logging=logging,
+                all_tools=all_tools,
+                max_tool_calls=max_tool_calls,
+            )
+
+        get_response_fn = get_response_from_llm
         tools_dict = {tool['info']['name']: tool for tool in all_tools}
         system_msg = f"{get_tooluse_prompt([tool['info'] for tool in all_tools])}\n\n"
         num_tool_calls = 0
