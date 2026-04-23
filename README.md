@@ -56,6 +56,10 @@ python generate_loop.py --domains <domain>
 
 By default, outputs will be saved in `outputs/` directory.
 
+For Polyglot runs, you can point HyperAgents at external benchmark assets with:
+`HYPERAGENTS_POLYGLOT_METADATA_PATH`, `HYPERAGENTS_POLYGLOT_SMALL_TASK_MAP`, and
+`HYPERAGENTS_POLYGLOT_MEDIUM_TASK_MAP`.
+
 ## File Structure
 - `agent/` code for using foundation models
 - `analysis/` scripts used for plotting and analysis
@@ -87,4 +91,3 @@ If you find this project useful, please consider citing:
       url={https://arxiv.org/abs/2603.19461}, 
 }
 ```
-

@@ -15,7 +15,13 @@ from utils.common import load_json_file
 from domains.polyglot.testrepo_prompt import get_test_description
 from domains.polyglot.test_spec import make_test_spec
 from domains.polyglot.docker_build import build_env_images, build_container, cleanup_container
-from domains.polyglot.constants import MAP_REPO_VERSION_TO_SPECS, TEST_COMMANDS
+from domains.polyglot.constants import (
+    MAP_REPO_VERSION_TO_SPECS,
+    POLYGLOT_MEDIUM_TASK_MAP,
+    POLYGLOT_METADATA_PATH,
+    POLYGLOT_SMALL_TASK_MAP,
+    TEST_COMMANDS,
+)
 from domains.polyglot.git_utils import filter_patch_by_files, remove_patch_by_files
 from domains.polyglot.utils import (
     copy_to_container,
@@ -234,7 +240,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             print(f"Error cleaning up Docker container for {instance_id}: {e}")
 
 def harness(
-        dataset_path="./domains/polyglot/polyglot_benchmark_metadata.json",
+        dataset_path=POLYGLOT_METADATA_PATH,
         test_task_list=None,
         num_samples=-1,
         max_workers=4,
@@ -397,11 +403,11 @@ def main():
     args = parser.parse_args()
 
     if args.subset == "small":
-        task_list = load_json_file("./domains/polyglot/subsets/small.json")
+        task_list = load_json_file(str(POLYGLOT_SMALL_TASK_MAP))
     elif args.subset == "medium":
-        task_list = load_json_file("./domains/polyglot/subsets/medium.json")
+        task_list = load_json_file(str(POLYGLOT_MEDIUM_TASK_MAP))
     else:
-        with open("./domains/polyglot/polyglot_benchmark_metadata.json") as f:
+        with open(POLYGLOT_METADATA_PATH) as f:
             metadata = json.loads(f.read())
             language_task_list = [entry["instance_id"] for entry in metadata if entry["instance_id"].startswith("python")]
             # Create a list of all tasks from metadata
@@ -411,7 +417,7 @@ def main():
 
     # Run the parallel harness
     harness(
-        dataset_path="./domains/polyglot/polyglot_benchmark_metadata.json",
+        dataset_path=POLYGLOT_METADATA_PATH,
         test_task_list=task_list,
         num_samples=args.num_samples,
         max_workers=args.max_workers,

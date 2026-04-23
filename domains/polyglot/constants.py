@@ -1,10 +1,32 @@
+import os
 from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _path_from_env(env_key: str, default: Path) -> Path:
+    value = os.environ.get(env_key)
+    return Path(value) if value else default
 
 # Constants - Evaluation Log Directories
 BASE_IMAGE_BUILD_DIR = Path("./domains/polyglot/logs/build_images/base")
 ENV_IMAGE_BUILD_DIR = Path("./domains/polyglot/logs/build_images/env")
 INSTANCE_IMAGE_BUILD_DIR = Path("./domains/polyglot/logs/build_images/instances")
 RUN_EVALUATION_LOG_DIR = Path("./domains/polyglot/logs/run_evaluation")
+
+POLYGLOT_METADATA_PATH = _path_from_env(
+    "HYPERAGENTS_POLYGLOT_METADATA_PATH",
+    REPO_ROOT / "domains" / "polyglot" / "polyglot_benchmark_metadata.json",
+)
+POLYGLOT_SMALL_TASK_MAP = _path_from_env(
+    "HYPERAGENTS_POLYGLOT_SMALL_TASK_MAP",
+    REPO_ROOT / "domains" / "polyglot" / "subsets" / "small.json",
+)
+POLYGLOT_MEDIUM_TASK_MAP = _path_from_env(
+    "HYPERAGENTS_POLYGLOT_MEDIUM_TASK_MAP",
+    REPO_ROOT / "domains" / "polyglot" / "subsets" / "medium.json",
+)
 
 NPM_TEST_SH = """#!/bin/bash
 

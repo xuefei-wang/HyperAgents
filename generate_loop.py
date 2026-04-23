@@ -30,6 +30,7 @@ from utils.domain_utils import (
     get_domain_splits,
     get_domain_stagedeval_samples,
 )
+from domains.polyglot.constants import POLYGLOT_MEDIUM_TASK_MAP, POLYGLOT_SMALL_TASK_MAP
 from utils.gl_utils import (
     apply_diffs_container,
     get_patch_files,
@@ -59,7 +60,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
 
     # Small sample size evaluation for staged eval
     if not skip_staged_eval:
-        test_task_list = load_json_file("./domains/polyglot/subsets/small.json")
+        test_task_list = load_json_file(str(POLYGLOT_SMALL_TASK_MAP))
         dnames = harness_polyglot(
             test_task_list=test_task_list,
             num_samples=-1,
@@ -78,7 +79,7 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
 
     # Check if additional evaluation should be run
     if run_next_eval:
-        test_task_list_more = load_json_file("./domains/polyglot/subsets/medium.json")
+        test_task_list_more = load_json_file(str(POLYGLOT_MEDIUM_TASK_MAP))
         dnames = harness_polyglot(
             test_task_list=test_task_list + test_task_list_more,
             num_samples=num_samples,
