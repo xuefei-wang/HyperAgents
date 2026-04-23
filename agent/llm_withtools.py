@@ -5,6 +5,9 @@ from agent.llm import get_response_from_llm
 from agent.tools import load_tools
 from utils.common import extract_jsons
 
+EDITOR_COMMANDS = {"view", "create", "str_replace", "insert", "undo_edit"}
+MAX_TOOL_FORMAT_RETRIES = 3
+
 
 def log_llm_usage(logging, info):
     if not info:
@@ -97,42 +100,63 @@ def _parse_tool_input(raw_input):
     return parsed if isinstance(parsed, dict) else None
 
 
+def _looks_like_structured_json_block(response):
+    return "<json>" in response or "```json" in response
+
+
+def _is_valid_tool_use(tool_use):
+    return (
+        isinstance(tool_use, dict)
+        and set(tool_use.keys()) == {"tool_name", "tool_input"}
+        and isinstance(tool_use.get("tool_name"), str)
+        and isinstance(tool_use.get("tool_input"), dict)
+    )
+
+
 def _extract_function_call_uses(response):
     tool_uses = []
 
-    for tool_name, body in re.findall(r'<invoke name="([^"]+)">(.*?)</invoke>', response, re.DOTALL):
-        params = {
-            name: value.strip()
-            for name, value in re.findall(r'<parameter name="([^"]+)">(.*?)</parameter>', body, re.DOTALL)
-        }
-        if not params:
-            continue
-        tool_input = params
-        if "tool_input" in params:
-            tool_input = _parse_tool_input(params["tool_input"])
-            if tool_input is None:
+    function_call_blocks = re.findall(r"<function_calls>(.*?)</function_calls>", response, re.DOTALL) or [response]
+    for block in function_call_blocks:
+        for tool_name, body in re.findall(r'<invoke name="([^"]+)">(.*?)</invoke>', block, re.DOTALL):
+            params = {
+                name: value.strip()
+                for name, value in re.findall(r'<parameter name="([^"]+)">(.*?)</parameter>', body, re.DOTALL)
+            }
+            if not params:
                 continue
-        tool_uses.append({"tool_name": tool_name.strip(), "tool_input": tool_input})
+            tool_input = params
+            if "tool_input" in params:
+                tool_input = _parse_tool_input(params["tool_input"])
+                if tool_input is None:
+                    continue
+            tool_uses.append({"tool_name": tool_name.strip(), "tool_input": tool_input})
 
-    for tool_name, tool_input in re.findall(
-        r'<function_name>([^<]+)</parameter>.*?<parameter name="tool_input">(.*?)</parameter>',
-        response,
-        re.DOTALL,
-    ):
-        parsed_tool_input = _parse_tool_input(tool_input.strip())
-        if parsed_tool_input is None:
-            continue
-        tool_uses.append({"tool_name": tool_name.strip(), "tool_input": parsed_tool_input})
+        for tool_name, tool_input in re.findall(
+            r'<function_name>([^<]+)</(?:function_name|parameter)>\s*<parameter name="tool_input">(.*?)</parameter>',
+            block,
+            re.DOTALL,
+        ):
+            parsed_tool_input = _parse_tool_input(tool_input.strip())
+            if parsed_tool_input is None:
+                continue
+            tool_uses.append({"tool_name": tool_name.strip(), "tool_input": parsed_tool_input})
 
     return tool_uses
 
 
-def should_retry_missing_tool_use(response, tool_uses=None, tool_infos=None):
+def should_retry_missing_tool_use(
+    response,
+    tool_uses=None,
+    tool_infos=None,
+    tool_call_count=0,
+    require_tool_call_before_final=False,
+):
     if not tool_infos or tool_uses:
         return False
     extracted_jsons = extract_jsons(response) or []
     if any(isinstance(item, dict) for item in extracted_jsons):
-        return False
+        return require_tool_call_before_final and tool_call_count == 0
     return bool(response.strip())
 
 
@@ -143,22 +167,23 @@ def check_for_tool_uses(response):
     """
     tool_uses = []
     extracted_jsons = extract_jsons(response) or []
+    allow_editor_recovery = _looks_like_structured_json_block(response)
     for tool_use in extracted_jsons:
+        if _is_valid_tool_use(tool_use):
+            tool_uses.append(
+                {
+                    "tool_name": tool_use["tool_name"].strip(),
+                    "tool_input": tool_use["tool_input"],
+                }
+            )
+            continue
         if not isinstance(tool_use, dict):
             continue
-        if "tool_name" not in tool_use or "tool_input" not in tool_use:
+        if allow_editor_recovery and "tool_name" not in tool_use and "tool_input" not in tool_use:
             # Conservative recovery for a common malformed editor call:
             # {"command": "view", "path": "/testbed/grid_summary.md"}.
-            if (
-                "tool_name" not in tool_use
-                and "tool_input" not in tool_use
-                and tool_use.get("command") in {"view", "create", "str_replace", "insert", "undo_edit"}
-                and isinstance(tool_use.get("path"), str)
-            ):
-                tool_use = {"tool_name": "editor", "tool_input": tool_use}
-            else:
-                continue
-        tool_uses.append(tool_use)
+            if tool_use.get("command") in EDITOR_COMMANDS and isinstance(tool_use.get("path"), str):
+                tool_uses.append({"tool_name": "editor", "tool_input": tool_use})
 
     tool_uses.extend(_extract_function_call_uses(response))
 
@@ -193,6 +218,7 @@ def chat_with_agent(
     multiple_tool_calls=False,  # Whether to allow multiple tool calls in a single response
     max_tool_calls=40,  # Maximum number of tool calls allowed in a single response, -1 for unlimited
     return_on_error=False,  # Return partial history instead of raising provider/tool-loop errors
+    require_tool_call_before_final=False,  # Keep retrying if the model returns final JSON before using any tool
 ):
     get_response_fn = get_response_from_llm
     # Construct message
@@ -206,6 +232,7 @@ def chat_with_agent(
         tools_dict = {tool["info"]["name"]: tool for tool in all_tools}
         system_msg = f"{get_tooluse_prompt([tool['info'] for tool in all_tools])}\n\n"
         num_tool_calls = 0
+        tool_format_retries = 0
 
         # Call API
         logging(f"Input: {repr(msg)}")
@@ -221,17 +248,29 @@ def chat_with_agent(
         # Tool use
         tool_uses = check_for_tool_uses(response)
         retry_tool_use = should_retry_tool_use(response, tool_uses)
-        retry_missing_tool_use = should_retry_missing_tool_use(response, tool_uses, all_tools)
+        retry_missing_tool_use = should_retry_missing_tool_use(
+            response,
+            tool_uses,
+            all_tools,
+            tool_call_count=num_tool_calls,
+            require_tool_call_before_final=require_tool_call_before_final,
+        )
         while tool_uses or retry_tool_use or retry_missing_tool_use:
             # Check for max tool calls
+            if max_tool_calls == 0 and tool_uses:
+                raise RuntimeError("Maximum number of tool calls reached before a valid final response.")
             if max_tool_calls > 0 and num_tool_calls >= max_tool_calls:
-                logging("Error: Maximum number of tool calls reached.")
-                break
+                raise RuntimeError("Maximum number of tool calls reached before a valid final response.")
+            if retry_tool_use or retry_missing_tool_use:
+                tool_format_retries += 1
+                if tool_format_retries > MAX_TOOL_FORMAT_RETRIES:
+                    raise RuntimeError("Maximum number of malformed tool-response retries reached.")
 
             tool_msgs = []
 
             # Process tool uses
             if tool_uses:
+                tool_format_retries = 0
                 tool_uses = tool_uses if multiple_tool_calls else tool_uses[:1]
                 for tool_use in tool_uses:
                     tool_name = tool_use["tool_name"]
@@ -254,14 +293,12 @@ def chat_with_agent(
             if retry_tool_use:
                 logging("Error: Output context exceeded. Please try again.")
                 tool_msgs.append("Error: Output context exceeded. Please try again.")
-                num_tool_calls += 1
             if retry_missing_tool_use:
                 logging("Error: Response must include one valid tool call or final JSON.")
                 tool_msgs.append(
                     "Error: Response must include exactly one valid tool call in the required <json> format, "
                     "or a final <json> response if the task is complete."
                 )
-                num_tool_calls += 1
 
             # Get tool response
             response, new_msg_history, info = get_response_fn(
@@ -276,7 +313,13 @@ def chat_with_agent(
             # Check for next tool use
             tool_uses = check_for_tool_uses(response)
             retry_tool_use = should_retry_tool_use(response, tool_uses)
-            retry_missing_tool_use = should_retry_missing_tool_use(response, tool_uses, all_tools)
+            retry_missing_tool_use = should_retry_missing_tool_use(
+                response,
+                tool_uses,
+                all_tools,
+                tool_call_count=num_tool_calls,
+                require_tool_call_before_final=require_tool_call_before_final,
+            )
 
     except Exception as e:
         logging(f"Error: {str(e)}")
