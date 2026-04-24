@@ -1,8 +1,78 @@
 import argparse
+import glob
 import os
 import json
 
 from utils.common import load_json_file
+
+
+def _aggregate_llm_usage(results_dir):
+    """Aggregate LLM_USAGE records from per-task markdown chat histories.
+
+    Polyglot writes per-task chat histories under ``eval_run_*/``; each ``.md``
+    file is the chat_history for one Polyglot instance. This mirrors the
+    aggregator in ``domains/swebench_pro/report.py`` but walks the
+    ``eval_run_*`` subdirectories so runs with multiple eval passes still
+    aggregate cleanly.
+    """
+    aggregate = {
+        "calls": 0,
+        "malformed_records": 0,
+        "total_tokens": 0,
+        "prompt_tokens": 0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.0,
+    }
+    saw_cost = False
+
+    md_files = sorted(glob.glob(os.path.join(results_dir, "eval_run_*", "*.md")))
+    for md_path in md_files:
+        try:
+            with open(md_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if "LLM_USAGE:" not in line:
+                        continue
+                    try:
+                        usage_record = json.loads(line.split("LLM_USAGE:", 1)[1].strip())
+                    except json.JSONDecodeError:
+                        aggregate["malformed_records"] += 1
+                        continue
+
+                    usage = usage_record.get("usage") or {}
+                    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    completion_tokens = int(usage.get("completion_tokens") or 0)
+                    total_tokens = int(usage.get("total_tokens") or 0)
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    completion_details = usage.get("completion_tokens_details") or {}
+                    output_details = usage.get("output_tokens_details") or {}
+                    cached_tokens = int(prompt_details.get("cached_tokens") or 0)
+                    reasoning_tokens = int(
+                        completion_details.get("reasoning_tokens")
+                        or output_details.get("reasoning_tokens")
+                        or 0
+                    )
+
+                    aggregate["calls"] += 1
+                    aggregate["prompt_tokens"] += prompt_tokens
+                    aggregate["cached_prompt_tokens"] += cached_tokens
+                    aggregate["uncached_prompt_tokens"] += max(prompt_tokens - cached_tokens, 0)
+                    aggregate["completion_tokens"] += completion_tokens
+                    aggregate["total_tokens"] += total_tokens or prompt_tokens + completion_tokens
+                    aggregate["reasoning_tokens"] += reasoning_tokens
+
+                    cost = usage_record.get("cost_usd")
+                    if isinstance(cost, (int, float)):
+                        aggregate["cost_usd"] += float(cost)
+                        saw_cost = True
+        except OSError:
+            continue
+
+    if not saw_cost:
+        aggregate["cost_usd"] = None
+    return aggregate
 
 
 def get_all_performance(run_keyword, results_dir='./outputs', expected_num_tasks=None):
@@ -88,6 +158,7 @@ def get_all_performance(run_keyword, results_dir='./outputs', expected_num_tasks
     overall_performance['total_unresolved_ids'] = total_unresolved_ids
     overall_performance['total_emptypatch_ids'] = total_emptypatch_ids
     overall_performance['total_resolved_ids'] = total_resolved_ids
+    overall_performance['llm_usage'] = _aggregate_llm_usage(results_dir)
 
     return performance_results, overall_performance
 
