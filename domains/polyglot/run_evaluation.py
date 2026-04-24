@@ -427,8 +427,9 @@ def make_run_report(
 
     # print final report
     dataset_ids = {i[KEY_INSTANCE_ID] for i in full_dataset}
-    print(f"Total instances: {len(full_dataset)}")
-    print(f"Instances submitted: {len(set(predictions.keys()) & dataset_ids)}")
+    submitted_instances = len(set(predictions.keys()) & dataset_ids)
+    print(f"Benchmark total instances: {len(full_dataset)}")
+    print(f"Instances submitted: {submitted_instances}")
     print(f"Instances completed: {len(completed_ids)}")
     print(f"Instances incomplete: {len(incomplete_ids)}")
     print(f"Instances resolved: {len(resolved_ids)}")
@@ -439,8 +440,14 @@ def make_run_report(
     print(f"Unremoved images: {len(unremoved_images)}")
 
     # write report to file
+    # NOTE: `total_instances` refers to the instances actually attempted in this
+    # run (the predictions subset). `benchmark_total_instances` preserves the
+    # full benchmark cardinality (number of tasks in the loaded dataset) so
+    # downstream analyses that want the full denominator can still compute it.
+    # This aligns with the ARC / SWE-bench Pro report convention.
     report = {
-        "total_instances": len(full_dataset),
+        "total_instances": len(predictions),
+        "benchmark_total_instances": len(full_dataset),
         "submitted_instances": len(predictions),
         "completed_instances": len(completed_ids),
         "resolved_instances": len(resolved_ids),
