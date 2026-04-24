@@ -26,7 +26,9 @@ def get_tooluse_prompt(tool_infos=[]):
 {tools_available}
 ```
 
-Use at most one tool per assistant response. You may use tools repeatedly across multiple responses: after each tool result, decide the next single tool call or provide the final answer.
+You may use one or more tools per assistant response. When you emit multiple
+tool calls in a single response, they are executed sequentially in the order
+written and the results are returned together before your next turn.
 
 Use tools in this format:
 <json>
@@ -44,7 +46,6 @@ Use tools in this format:
 }}
 </json>
 
-ONLY USE ONE TOOL PER RESPONSE, BUT KEEP USING ONE TOOL AT A TIME UNTIL THE TASK IS DONE.
 STRICTLY FOLLOW THE FORMAT OF TOOL_NAME AND TOOL_INPUT ABOVE.
 DO NOT HALLUCINATE OR MAKE UP ANYTHING.
 """.format(tools_available=tools_available)
@@ -77,10 +78,20 @@ def should_retry_tool_use(response, tool_uses=None):
     # No retry
     return False
 
-def check_for_tool_uses(response):
+_TOOL_SHAPED_SIGNALS = ("<json>", "<function_calls>", "<invoke ", "```json", '"tool_name"')
+
+
+def check_for_tool_uses(response, logging=None):
     """
     Checks if the response contains one or more tool calls in json code blocks.
     Returns a list of tool use dictionaries.
+
+    If the response LOOKS like it was trying to invoke tools but nothing
+    parsed, emit a "TOOL_PARSER_MISS" log line via ``logging`` (default: silent
+    for backward compatibility). Silent misses were the root cause of both the
+    Haiku #488 degenerate-text loop and the gpt-5.4-mini multi-stanza drop —
+    parser returns None, tool loop exits, failure shows up only as a 0-byte
+    patch at the end of the run.
     """
     tool_uses = []
     extracted_jsons = extract_jsons(response) or []
@@ -101,6 +112,13 @@ def check_for_tool_uses(response):
                 continue
         tool_uses.append(tool_use)
 
+    if not tool_uses and logging is not None:
+        if any(signal in response for signal in _TOOL_SHAPED_SIGNALS):
+            logging(
+                "TOOL_PARSER_MISS: response contains tool-shaped markers but no "
+                "tool call was parsed. Investigate extract_jsons regex coverage."
+            )
+
     return tool_uses if tool_uses else None
 
 def process_tool_call(tools_dict, tool_name, tool_input):
@@ -118,7 +136,11 @@ def chat_with_agent(
     msg_history=None,
     logging=print,
     tools_available=[],  # Empty list means no tools, 'all' means all tools
-    multiple_tool_calls=False,  # Whether to allow multiple tool calls in a single response
+    multiple_tool_calls=True,  # Allow multiple tool calls in one response. Reasoning-heavy
+    # models (gpt-5.4-mini, o-series) routinely plan N tools per turn; the
+    # prior default of False silently dropped every stanza after the first,
+    # so the agent re-emitted the same exploration in the next turn and
+    # never advanced. See failure-mode audit on audit_sweep_openai_openai_audit.
     max_tool_calls=40,  # Maximum number of tool calls allowed in a single response, -1 for unlimited
     return_on_error=False,  # Return partial history instead of raising provider/tool-loop errors
 ):
@@ -147,7 +169,7 @@ def chat_with_agent(
         # logging(f"Info: {repr(info)}")
 
         # Tool use
-        tool_uses = check_for_tool_uses(response)
+        tool_uses = check_for_tool_uses(response, logging=logging)
         retry_tool_use = should_retry_tool_use(response, tool_uses)
         while tool_uses or retry_tool_use:
             # Check for max tool calls
@@ -191,7 +213,7 @@ def chat_with_agent(
             # logging(f"Info: {repr(info)}")
 
             # Check for next tool use
-            tool_uses = check_for_tool_uses(response)
+            tool_uses = check_for_tool_uses(response, logging=logging)
             retry_tool_use = should_retry_tool_use(response, tool_uses)
 
     except Exception as e:
