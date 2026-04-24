@@ -365,6 +365,9 @@ def harness(
 
     # Prepare the dataset entries
     entries = list(dataset)
+    # Capture the full benchmark cardinality BEFORE subset filtering so the
+    # report can distinguish "instances attempted" vs "benchmark size".
+    benchmark_total_instances = len(entries)
     if test_task_list:
         entries = [entry for entry in entries if entry['instance_id'] in test_task_list]
     if num_samples > 0:
@@ -429,8 +432,15 @@ def harness(
             else:
                 error_ids.append(result["instance_id"])
 
+    # NOTE: `total_instances` refers to the instances actually attempted in
+    # this run (the filtered `entries` subset). `benchmark_total_instances`
+    # preserves the full benchmark cardinality (size of the loaded dataset
+    # prior to subset filtering) so downstream analyses that want the full
+    # denominator can still compute it. This aligns with the ARC / SWE-bench
+    # Pro report convention.
     report = {
-        "total_instances": len(dataset),
+        "total_instances": len(entries),
+        "benchmark_total_instances": benchmark_total_instances,
         "submitted_instances": len(results),
         "completed_instances": len(completed_ids),
         "resolved_instances": len(resolved_ids),

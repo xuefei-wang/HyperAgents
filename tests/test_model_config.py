@@ -1,4 +1,8 @@
+from types import SimpleNamespace
+
 from agent import llm
+from domains import harness
+from domains.imo import grading_utils, proof_grading_utils, proof_utils
 
 
 def _fake_completion(**kwargs):
@@ -78,3 +82,15 @@ def test_runtime_env_collectors_forward_profile_model(monkeypatch):
         assert runtime_env["MODEL_PROVIDER"] == "openai"
         assert runtime_env["MODEL_AUTH_MODE"] == "api"
         assert runtime_env["MODEL"] == "gpt-5.4-mini"
+
+
+def test_generic_harness_honors_task_model_override(monkeypatch):
+    monkeypatch.setenv("HYPERAGENTS_TASK_MODEL", "openai/gpt-5.4-mini")
+
+    assert harness._domain_model(SimpleNamespace(MODEL="openai/gpt-4o")) == "openai/gpt-5.4-mini"
+
+
+def test_imo_defaults_use_shared_openai_model():
+    assert proof_utils.MODEL == llm.OPENAI_MODEL
+    assert grading_utils.MODEL == llm.OPENAI_MODEL
+    assert proof_grading_utils.MODEL == llm.OPENAI_MODEL

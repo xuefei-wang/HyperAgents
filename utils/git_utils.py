@@ -1,5 +1,5 @@
 import os
-import git
+import shutil
 import subprocess
 
 
@@ -20,14 +20,16 @@ def _is_ignored_diff_path(path):
 
 
 def get_git_commit_hash(repo_path='.'):
-    try:
-        # Load the repository
-        repo = git.Repo(repo_path)
-        # Get the current commit hash
-        commit_hash = repo.head.commit.hexsha
-        return commit_hash
-    except Exception as e:
-        print("Error while getting git commit hash:", e)
+    result = subprocess.run(
+        ["git", "-C", repo_path, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    else:
+        print("Error while getting git commit hash:", result.stderr.strip())
         return None
 
 def apply_patch(git_dname, patch_str):
@@ -169,6 +171,31 @@ def commit_repo(git_dname, commit_message="a nonsense commit message", user_name
     Stages all changes and commits them with a given message.
     If there's nothing to commit, returns the current commit hash.
     """
+    # ``setup_initial_gen`` copies repositories into run output directories. If
+    # the source is a git worktree, that copy can contain a .git pointer file
+    # that still targets the source worktree's gitdir. Normalize all pointer
+    # copies into standalone repositories before staging.
+    git_path = os.path.join(git_dname, ".git")
+    needs_init = os.path.isfile(git_path)
+    result_revparse = subprocess.run(
+        ["git", "-C", git_dname, "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if needs_init or result_revparse.returncode != 0:
+        if os.path.isdir(git_path):
+            shutil.rmtree(git_path)
+        elif os.path.exists(git_path):
+            os.remove(git_path)
+        result_init = subprocess.run(
+            ["git", "-C", git_dname, "init"],
+            capture_output=True,
+            text=True,
+        )
+        if result_init.returncode != 0:
+            print(f"commit_repo error (init): {result_init.stderr}")
+            return None
+
     # Stage all changes
     add_cmd = ["git", "-C", git_dname, "add", "--all"]
     result_add = subprocess.run(add_cmd, capture_output=True, text=True)
@@ -192,13 +219,7 @@ def commit_repo(git_dname, commit_message="a nonsense commit message", user_name
             print(f"commit_repo error (commit): {result_commit.stderr}")
             return None
 
-    # Extract the commit hash from stdout
-    parts = result_commit.stdout.strip().split()
-    if len(parts) >= 2:
-        raw_hash = parts[1].strip("[]")
-        return raw_hash
-    else:
-        return get_git_commit_hash(git_dname)
+    return get_git_commit_hash(git_dname)
 
 if __name__ == "__main__":
     # Get the current commit hash

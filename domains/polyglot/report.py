@@ -33,26 +33,57 @@ def get_all_performance(run_keyword, results_dir='./outputs', expected_num_tasks
     total_unresolved_ids = []
     total_resolved_ids = []
     total_emptypatch_ids = []
+    total_reported_instances = 0
+    total_benchmark_instances = 0
     for file_name in matching_files:
         eval_agent_path = os.path.join(results_dir, file_name)
         eval_results = load_json_file(eval_agent_path)
         resolved_instances = eval_results.get('resolved_instances', 0)
         submitted_instances = eval_results.get('submitted_instances', 0)
+        # `total_instances` is subset-aware after the fix (counts attempted
+        # instances for this run). `benchmark_total_instances` is the new
+        # field that preserves the full benchmark cardinality. For legacy
+        # artifacts written before the fix, `benchmark_total_instances` is
+        # absent, so we fall back to the old `total_instances` value so
+        # historical reports still aggregate cleanly.
+        reported_instances = eval_results.get('total_instances', 0)
+        benchmark_instances = eval_results.get(
+            'benchmark_total_instances',
+            reported_instances if isinstance(reported_instances, int) else 0,
+        )
         total_resolved_instances += resolved_instances
         total_submitted_instances += submitted_instances
+        total_reported_instances += reported_instances if isinstance(reported_instances, int) else 0
+        total_benchmark_instances += benchmark_instances if isinstance(benchmark_instances, int) else 0
         accuracy_score = resolved_instances / submitted_instances if submitted_instances > 0 else 0
         performance_results.append({'file': file_name, 'accuracy_score': accuracy_score, **eval_results})
         total_unresolved_ids.extend(eval_results.get('unresolved_ids', []))
         total_emptypatch_ids.extend(eval_results.get('empty_patch_ids', []))
         total_resolved_ids.extend(eval_results.get('resolved_ids', []))
 
-    # Calculate the overall accuracy score
+    # Calculate the overall accuracy score.
+    #
+    # `total_instances` is subset-aware (counts instances actually attempted
+    # in this run). `benchmark_total_instances` carries the full benchmark
+    # cardinality for downstream analyses that need the original denominator.
+    #
+    # When `expected_num_tasks` is supplied, cap `total_instances` at the
+    # smaller of (expected, total_reported) so a caller over-stating the
+    # expected count can't inflate the denominator past what was actually
+    # attempted. With the fix, per-file `total_instances` is the attempted
+    # count, so this `min()` resolves to the true attempted count.
     overall_performance = {}
-    total_instances = expected_num_tasks if expected_num_tasks is not None else total_submitted_instances
+    if expected_num_tasks is not None:
+        total_instances = expected_num_tasks
+        if total_reported_instances > 0:
+            total_instances = min(total_instances, total_reported_instances)
+    else:
+        total_instances = total_reported_instances or total_submitted_instances
     overall_performance['accuracy_score'] = total_resolved_instances / total_instances if total_instances > 0 else 0
     overall_performance['total_resolved_instances'] = total_resolved_instances
     overall_performance['total_submitted_instances'] = total_submitted_instances
     overall_performance['total_instances'] = total_instances
+    overall_performance['benchmark_total_instances'] = total_benchmark_instances
     overall_performance['files'] = matching_files
     overall_performance['total_unresolved_ids'] = total_unresolved_ids
     overall_performance['total_emptypatch_ids'] = total_emptypatch_ids

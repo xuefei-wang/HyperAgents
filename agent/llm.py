@@ -49,6 +49,8 @@ GEMINI_3_MODEL = "gemini/gemini-3-pro-preview"
 GEMINI_MODEL = "gemini/gemini-2.5-pro"
 GEMINI_FLASH_MODEL = "gemini/gemini-2.5-flash"
 
+DEFAULT_OPENAI_REASONING_EFFORT = "medium"
+
 litellm.drop_params=True
 
 
@@ -253,6 +255,7 @@ if __name__ == "__main__":
         ("OPENAI_GPT52_MODEL", OPENAI_GPT52_MODEL),
         ("OPENAI_GPT5_MODEL", OPENAI_GPT5_MODEL),
         ("OPENAI_GPT5MINI_MODEL", OPENAI_GPT5MINI_MODEL),
+        ("OPENAI_GPT54MINI_MODEL", OPENAI_GPT54MINI_MODEL),
         ("GEMINI_3_MODEL", GEMINI_3_MODEL),
         ("GEMINI_MODEL", GEMINI_MODEL),
         ("GEMINI_FLASH_MODEL", GEMINI_FLASH_MODEL),
