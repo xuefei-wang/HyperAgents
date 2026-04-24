@@ -13,7 +13,7 @@ def extract_jsons(response):
     Extracts all JSON objects from the given response string.
     """
     patterns = [
-        r'<json>(.*?)</json>',
+        r'<json>\s*(\{.*?\})\s*(?:</json>)?',
         r'```json(.*?)```',
     ]
     extracted_jsons = []
