@@ -1,6 +1,75 @@
 import argparse
+import glob
 import json
 import os
+
+
+def _aggregate_llm_usage(run_dir):
+    """Aggregate LLM_USAGE records from per-instance markdown files under run_dir.
+
+    Unlike the ARC variant (which walks chat_history_file paths from task_results),
+    SWE-bench Pro writes chat histories alongside the task_results.json in run_dir,
+    so we glob *.md there directly — this avoids depending on the relative-path
+    quirks of chat_history_file, which are written relative to the hyperagents CWD.
+    """
+    aggregate = {
+        "calls": 0,
+        "malformed_records": 0,
+        "total_tokens": 0,
+        "prompt_tokens": 0,
+        "cached_prompt_tokens": 0,
+        "uncached_prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.0,
+    }
+    saw_cost = False
+
+    md_files = sorted(glob.glob(os.path.join(run_dir, "*.md")))
+    for md_path in md_files:
+        try:
+            with open(md_path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    if "LLM_USAGE:" not in line:
+                        continue
+                    try:
+                        usage_record = json.loads(line.split("LLM_USAGE:", 1)[1].strip())
+                    except json.JSONDecodeError:
+                        aggregate["malformed_records"] += 1
+                        continue
+
+                    usage = usage_record.get("usage") or {}
+                    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    completion_tokens = int(usage.get("completion_tokens") or 0)
+                    total_tokens = int(usage.get("total_tokens") or 0)
+                    prompt_details = usage.get("prompt_tokens_details") or {}
+                    completion_details = usage.get("completion_tokens_details") or {}
+                    output_details = usage.get("output_tokens_details") or {}
+                    cached_tokens = int(prompt_details.get("cached_tokens") or 0)
+                    reasoning_tokens = int(
+                        completion_details.get("reasoning_tokens")
+                        or output_details.get("reasoning_tokens")
+                        or 0
+                    )
+
+                    aggregate["calls"] += 1
+                    aggregate["prompt_tokens"] += prompt_tokens
+                    aggregate["cached_prompt_tokens"] += cached_tokens
+                    aggregate["uncached_prompt_tokens"] += max(prompt_tokens - cached_tokens, 0)
+                    aggregate["completion_tokens"] += completion_tokens
+                    aggregate["total_tokens"] += total_tokens or prompt_tokens + completion_tokens
+                    aggregate["reasoning_tokens"] += reasoning_tokens
+
+                    cost = usage_record.get("cost_usd")
+                    if isinstance(cost, (int, float)):
+                        aggregate["cost_usd"] += float(cost)
+                        saw_cost = True
+        except OSError:
+            continue
+
+    if not saw_cost:
+        aggregate["cost_usd"] = None
+    return aggregate
 
 
 def _resolve_run_dir(output_dir, run_keyword):
@@ -30,6 +99,7 @@ def report(output_dir, run_keyword, expected_num_tasks=None):
     error_ids = sorted(result["instance_id"] for result in task_results if result.get("agent_status") == "error")
     completed_ids = sorted(result["instance_id"] for result in task_results if result.get("agent_status") == "completed")
     empty_patch_ids = sorted(result["instance_id"] for result in task_results if result.get("patch_bytes", 0) == 0)
+    llm_usage = _aggregate_llm_usage(run_dir)
 
     report_data = {
         "accuracy_score": len(resolved_ids) / total_instances if total_instances > 0 else 0.0,
@@ -46,6 +116,7 @@ def report(output_dir, run_keyword, expected_num_tasks=None):
         "error_ids": error_ids,
         "timeout_ids": timeout_ids,
         "completed_ids": completed_ids,
+        "llm_usage": llm_usage,
         "task_results_file": task_results_path,
         "official_eval_results_file": eval_results_path,
     }
