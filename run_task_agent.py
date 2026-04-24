@@ -10,14 +10,25 @@ from utils.git_utils import diff_versus_commit
 
 
 def _load_shared_env() -> None:
-    repo_root = Path(__file__).resolve().parents[2]
-    env_paths = [
-        repo_root / "configs" / "providers" / ".env.shared",
-        repo_root / "configs" / "models" / "shared.env",
+    run_task_path = Path(__file__).resolve()
+    parent_candidates = list(run_task_path.parents)
+    candidate_roots = [
+        *(parent_candidates[idx] for idx in (0, 1, 2) if idx < len(parent_candidates)),
+        Path.cwd(),
     ]
-    for env_path in env_paths:
-        if env_path.exists():
-            load_dotenv(env_path, override=False)
+    loaded = set()
+    for repo_root in candidate_roots:
+        for env_path in [
+            repo_root / "configs" / "providers" / ".env.shared",
+            repo_root / "configs" / "providers" / ".env.haiku",
+            repo_root / "configs" / "providers" / ".env.openai",
+            repo_root / "configs" / "models" / "shared.env",
+        ]:
+            if env_path in loaded:
+                continue
+            loaded.add(env_path)
+            if env_path.exists():
+                load_dotenv(env_path, override=False)
 
 
 def _default_model_for_domain(domain):
