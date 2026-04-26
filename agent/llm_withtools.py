@@ -3,7 +3,6 @@ import json
 
 from agent.llm import get_response_from_llm
 from agent.tools import load_tools
-from utils.common import extract_jsons
 
 
 def log_llm_usage(logging, info):
@@ -26,9 +25,7 @@ def get_tooluse_prompt(tool_infos=[]):
 {tools_available}
 ```
 
-Use at most one tool per assistant response. You may use tools repeatedly across multiple responses: after each tool result, decide the next single tool call or provide the final answer.
-
-Use tools in this format:
+Use only one tool (if needed) in this format:
 <json>
 {{
     "tool_name": ...,
@@ -36,16 +33,7 @@ Use tools in this format:
 }}
 </json>
 
-`tool_input` must always be a JSON object matching the tool schema, not a string. For example, a bash call must be:
-<json>
-{{
-    "tool_name": "bash",
-    "tool_input": {{"command": "cd /testbed && ls"}}
-}}
-</json>
-
-ONLY USE ONE TOOL PER RESPONSE, BUT KEEP USING ONE TOOL AT A TIME UNTIL THE TASK IS DONE.
-STRICTLY FOLLOW THE FORMAT OF TOOL_NAME AND TOOL_INPUT ABOVE.
+ONLY USE ONE TOOL PER RESPONSE, AND STRICTLY FOLLOW THE FORMAT OF TOOL_NAME AND TOOL_INPUT ABOVE.
 DO NOT HALLUCINATE OR MAKE UP ANYTHING.
 """.format(tools_available=tools_available)
     return tooluse_prompt.strip()
@@ -82,24 +70,18 @@ def check_for_tool_uses(response):
     Checks if the response contains one or more tool calls in json code blocks.
     Returns a list of tool use dictionaries.
     """
+    pattern = r'<json>\s*(\{.*?\})\s*</json>'
+    matches = re.findall(pattern, response, re.DOTALL)
     tool_uses = []
-    extracted_jsons = extract_jsons(response) or []
-    for tool_use in extracted_jsons:
-        if not isinstance(tool_use, dict):
-            continue
-        if 'tool_name' not in tool_use or 'tool_input' not in tool_use:
-            # Conservative recovery for a common malformed editor call:
-            # {"command": "view", "path": "/testbed/grid_summary.md"}.
-            if (
-                'tool_name' not in tool_use
-                and 'tool_input' not in tool_use
-                and tool_use.get('command') in {'view', 'create', 'str_replace', 'insert', 'undo_edit'}
-                and isinstance(tool_use.get('path'), str)
-            ):
-                tool_use = {'tool_name': 'editor', 'tool_input': tool_use}
-            else:
-                continue
-        tool_uses.append(tool_use)
+
+    for match in matches:
+        try:
+            tool_use = json.loads(match)
+            if 'tool_name' not in tool_use or 'tool_input' not in tool_use:
+                continue  # Skip invalid tool use
+            tool_uses.append(tool_use)
+        except json.JSONDecodeError:
+            continue  # Skip malformed JSON blocks
 
     return tool_uses if tool_uses else None
 
