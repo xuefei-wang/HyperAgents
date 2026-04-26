@@ -111,33 +111,6 @@ class TaskAgent(AgentSystem):
 
     def _build_instruction(self, inputs):
         domain = inputs['domain']
-        if domain == 'polyglot':
-            git_tempdir = inputs['git_tempdir']
-            return f"""You are solving a coding task in a writable git repository.
-
-Repository:
-`{git_tempdir}`
-
-Problem statement:
-{inputs['problem_statement']}
-
-Testing guidance:
-{inputs['test_description']}
-
-Task requirements:
-- You must inspect the repository and modify files in `{git_tempdir}` directly.
-- Use the available tools to read files, edit files, and run shell commands.
-- Do not merely describe a solution or offer code for the user to paste.
-- Do not stop after analysis. Keep working until you have made the code changes you believe solve the task.
-- Prefer targeted edits over broad rewrites.
-- When you are finished, provide a short JSON response confirming what you changed.
-
-Respond in JSON format with the following schema:
-<json>
-{{
-    "response": "brief summary of the edits you made"
-}}
-</json>"""
 
         if domain == 'swebench_pro':
             git_tempdir = inputs['git_tempdir']
@@ -251,7 +224,7 @@ Respond in JSON format with the following schema:
         """
         instruction = self._build_instruction(inputs)
         domain = inputs.get('domain')
-        tools_available = ['bash', 'editor'] if domain in {'polyglot', 'swebench_pro', 'arc_ui'} else 'all'
+        tools_available = ['bash', 'editor'] if domain in {'swebench_pro', 'arc_ui'} else 'all'
         new_msg_history = chat_with_agent(
             instruction,
             model=self.model,
