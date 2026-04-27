@@ -141,6 +141,35 @@ def commit_repo(git_dname, commit_message="a nonsense commit message", user_name
     Stages all changes and commits them with a given message.
     If there's nothing to commit, returns the current commit hash.
     """
+    import shutil
+    # ``setup_initial_gen`` copies repositories into run output directories. If
+    # the source is a git worktree (or a submodule with a .git pointer file),
+    # that copy can contain a .git pointer file that still targets the source
+    # worktree's gitdir (e.g. .git/modules/baselines/hyperagents) which is not
+    # mounted into the HA Docker container. Normalize all pointer copies into
+    # standalone repositories before staging so git operations resolve inside
+    # the container.
+    git_path = os.path.join(git_dname, ".git")
+    needs_init = os.path.isfile(git_path)
+    result_revparse = subprocess.run(
+        ["git", "-C", git_dname, "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+    )
+    if needs_init or result_revparse.returncode != 0:
+        if os.path.isdir(git_path):
+            shutil.rmtree(git_path)
+        elif os.path.exists(git_path):
+            os.remove(git_path)
+        result_init = subprocess.run(
+            ["git", "-C", git_dname, "init"],
+            capture_output=True,
+            text=True,
+        )
+        if result_init.returncode != 0:
+            print(f"commit_repo error (init): {result_init.stderr}")
+            return None
+
     # Stage all changes
     add_cmd = ["git", "-C", git_dname, "add", "--all"]
     result_add = subprocess.run(add_cmd, capture_output=True, text=True)
@@ -164,13 +193,11 @@ def commit_repo(git_dname, commit_message="a nonsense commit message", user_name
             print(f"commit_repo error (commit): {result_commit.stderr}")
             return None
 
-    # Extract the commit hash from stdout
-    parts = result_commit.stdout.strip().split()
-    if len(parts) >= 2:
-        raw_hash = parts[1].strip("[]")
-        return raw_hash
-    else:
-        return get_git_commit_hash(git_dname)
+    # The first commit on a fresh repo prints `[main (root-commit) <sha>] msg`,
+    # so positional parsing of `parts[1]` returns `(root-commit)` instead of the
+    # SHA. Fall back to `git rev-parse HEAD` for a reliable hash regardless of
+    # whether this was a root commit or not.
+    return get_git_commit_hash(git_dname)
 
 if __name__ == "__main__":
     # Get the current commit hash
