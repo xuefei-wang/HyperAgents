@@ -222,27 +222,14 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             return {"success": True, "instance_id": instance_id, "eval_result": eval_result}
 
 
-        solution_files = entry['files']['solution']
-        solution_paths = " ".join(solution_files)
-
-        # Preserve only the benchmark-defined solution artifacts across the
-        # transition from base_commit to test_commit. Include untracked files so
-        # test-writing tasks can create their solution file from scratch.
-        exec_result = container.exec_run(f"git -C /testbed stash push --include-untracked -- {solution_paths}", workdir='/')
+        exec_result = container.exec_run("git -C /testbed stash push " + " ".join(entry['files']['solution']), workdir='/')
         log_container_output(exec_result)
         exec_result = container.exec_run(f"git -C /testbed reset --hard {entry['test_commit']}", workdir='/')
         log_container_output(exec_result)
         exec_result = container.exec_run(f"git -C /testbed clean -fd", workdir='/')
         log_container_output(exec_result)
-        exec_result = container.exec_run("git -C /testbed stash list", workdir='/')
+        exec_result = container.exec_run("git -C /testbed stash pop", workdir='/')
         log_container_output(exec_result)
-        if exec_result.output.decode().strip():
-            exec_result = container.exec_run(f"rm -rf {' '.join('/testbed/' + path for path in solution_files)}", workdir='/')
-            log_container_output(exec_result)
-            exec_result = container.exec_run("git -C /testbed stash pop", workdir='/')
-            log_container_output(exec_result)
-        else:
-            safe_log("No solution-file changes were stashed before evaluation")
 
         safe_log("Running the eval")
         language = entry['language']
