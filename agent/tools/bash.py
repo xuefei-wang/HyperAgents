@@ -11,7 +11,6 @@ def tool_info():
 * You do have access to a mirror of common linux and python packages via apt and pip.
 * State is persistent across command calls and discussions with the user.
 * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
-* Do not use shell heredocs such as python <<'PY' or cat <<'EOF'. They can hang this tool. Use python -c, existing scripts, or the editor tool instead.
 * Please avoid commands that may produce a very large amount of output.
 * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.""",
         "input_schema": {
