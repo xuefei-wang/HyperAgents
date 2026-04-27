@@ -205,8 +205,9 @@ def view_file(path: Path, view_range=None) -> str:
 
 def replace_text(path: Path, old_str: str, new_str: str) -> str:
     """Replace text in file."""
-    content = read_file(path)
-    new_str = new_str if new_str is not None else ""
+    content = read_file(path).expandtabs()
+    old_str = old_str.expandtabs()
+    new_str = new_str.expandtabs() if new_str is not None else ""
 
     # Check for exact match and uniqueness
     occurrences = content.count(old_str)
@@ -233,7 +234,8 @@ def replace_text(path: Path, old_str: str, new_str: str) -> str:
 
 def insert_text(path: Path, insert_line: int, new_str: str) -> str:
     """Insert text after specific line number."""
-    content = read_file(path)
+    content = read_file(path).expandtabs()
+    new_str = new_str.expandtabs()
     lines = content.split("\n")
     n_lines = len(lines)
 
