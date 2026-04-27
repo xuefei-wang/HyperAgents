@@ -119,10 +119,7 @@ def visualize_graph(G, score_map, output_dir, name_suffix, split="train", type="
         print("No nodes to visualize.")
         return
 
-    try:
-        pos = graphviz_layout(G, prog="dot")
-    except ImportError:
-        pos = nx.spring_layout(G, seed=0)
+    pos = graphviz_layout(G, prog="dot")
 
     nodes = list(G.nodes())
     scores = [score_map.get(node, None) for node in nodes]
