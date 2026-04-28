@@ -1,6 +1,5 @@
 import asyncio
 import os
-import subprocess
 
 def tool_info():
     return {
@@ -132,23 +131,6 @@ def filter_error(error):
 async def tool_function_call(command):
     """Execute a command in the bash shell."""
     try:
-        if "<<" in command:
-            result = subprocess.run(
-                ["/bin/bash", "-lc", command],
-                capture_output=True,
-                text=True,
-                timeout=120.0,
-                env=os.environ.copy(),
-            )
-            output = result.stdout.strip()
-            error = filter_error(result.stderr.strip())
-            response = ""
-            if output:
-                response += output
-            if error:
-                response += "\nError:\n" + error
-            return response.strip()
-
         bash_session = BashSession()
 
         if not bash_session._started:

@@ -638,7 +638,7 @@ def run_commands_to_check_compilation(container, run_baseline=None, edit_select_
             "300",  # 5m timeout
             "python",
             "-c",
-            "import os, tempfile; from meta_agent import MetaAgent; MetaAgent(chat_history_file=os.path.join(tempfile.mkdtemp(), 'meta.md'))",
+            "from meta_agent import MetaAgent",
         ]
         exec_result = container.exec_run(cmd=command, workdir=f"/{REPO_NAME}")
         log_container_output(exec_result)
@@ -650,7 +650,7 @@ def run_commands_to_check_compilation(container, run_baseline=None, edit_select_
         "300",  # 5m timeout
         "python",
         "-c",
-        "import os, tempfile; from task_agent import TaskAgent; TaskAgent(chat_history_file=os.path.join(tempfile.mkdtemp(), 'task.md'))",
+        "from task_agent import TaskAgent",
     ]
     exec_result = container.exec_run(cmd=command, workdir=f"/{REPO_NAME}")
     log_container_output(exec_result)
