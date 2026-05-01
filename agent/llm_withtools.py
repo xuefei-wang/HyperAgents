@@ -50,6 +50,7 @@ def chat_with_agent(
     tools_available=[],   # Empty list means no tools, 'all' means all tools
     multiple_tool_calls=False,  # Whether to allow multiple tool calls per turn
     max_tool_calls=40,    # Maximum tool calls allowed (-1 for unlimited)
+    return_on_error=False,  # Return partial history instead of raising provider/tool-loop errors
 ):
     if msg_history is None:
         msg_history = []
@@ -156,6 +157,21 @@ def chat_with_agent(
                 num_tool_calls += 1
     except Exception as e:
         logging(f"Error: {str(e)}")
+        if return_on_error:
+            # Convert what we have so far to HA's [{role,text}] shape and bail
+            # without raising. Caller wanted partial history on transport
+            # errors instead of an exception.
+            partial = []
+            for m in messages:
+                text = m.get("content") or ""
+                if m.get("tool_calls"):
+                    tc_strs = [
+                        f'<tool_use name="{c["function"]["name"]}">{c["function"]["arguments"]}</tool_use>'
+                        for c in m["tool_calls"]
+                    ]
+                    text = (text + "\n" + "\n".join(tc_strs)).strip()
+                partial.append({"role": m["role"], "text": text})
+            return partial
         raise
 
     # Convert back to HA's [{role, text}] shape so callers like
