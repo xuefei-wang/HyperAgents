@@ -1,8 +1,39 @@
-import re
+"""Tool-using chat loop on top of litellm.completion(tools=[...]).
+
+Replaces the upstream prose-regex protocol (where the model emits
+<json>{"tool_name": ..., "tool_input": ...}</json> in its text output and
+the loader regex-parses it) with litellm's first-class tool-calling API:
+``tools=[{"type": "function", ...}]`` plus ``tool_choice="auto"``. Anthropic,
+OpenAI, Gemini, and any other provider litellm supports go through the same
+code path; the model gets schema-validated tool calls and we get structured
+``tool_calls`` back.
+
+Why we needed this: Claude Haiku 4.5 doesn't reliably comply with the prose
+protocol for short tool prompts -- it emits ``{"tool_name": "bash", "command":
+"..."}`` with params at the top level instead of nested under ``"tool_input"``,
+which the upstream regex parser silently drops. Reproduced 20/20 on a simple
+``ls`` prompt against pristine HA. Once the parser drops the tool call, the
+model hallucinates an answer with no tool ever firing -> empty patches all
+the way down -> the meta-agent cannot self-improve.
+
+Returns ``new_msg_history`` as ``[{role, text}, ...]`` with the final assistant
+message wrapped as ``<json>{"response": "<text>"}</json>`` so existing
+``extract_jsons`` consumers (e.g. ``task_agent.py``) keep working.
+
+Empirical: in a 10-gen polyglot run with pure haiku-4.5 (task + meta), this
+path reaches 9/10 on the staged-eval JS subset by gen 7. The upstream prose
+path stays at 0/10 across all 10 gens because the meta-agent never identifies
+the load-bearing change (``tools_available='all'`` on ``task_agent.py``).
+"""
 import json
 
-from agent.llm import get_response_from_llm
+import litellm
+
+from agent.llm import _extract_response_info, _openai_reasoning_effort
 from agent.tools import load_tools
+
+MAX_TOKENS = 16384
+litellm.drop_params = True
 
 
 def log_llm_usage(logging, info):
@@ -10,180 +41,167 @@ def log_llm_usage(logging, info):
         return
     logging(f"LLM_USAGE: {json.dumps(info, sort_keys=True)}")
 
-def get_tooluse_prompt(tool_infos=[]):
-    """
-    Get the prompt for using the available tools.
-    """
-    # If no tools are available, return an empty string
-    if not tool_infos or len(tool_infos) == 0:
-        return ""
-    # Create the prompt
-    tools_available = [str(tool_info) for tool_info in tool_infos]
-    tools_available = '\n\n'.join(tools_available) if tools_available else 'None'
-    tooluse_prompt = """Here are the available tools:
-```
-{tools_available}
-```
-
-Use only one tool (if needed) in this format:
-<json>
-{{
-    "tool_name": ...,
-    "tool_input": ...
-}}
-</json>
-
-ONLY USE ONE TOOL PER RESPONSE, AND STRICTLY FOLLOW THE FORMAT OF TOOL_NAME AND TOOL_INPUT ABOVE.
-DO NOT HALLUCINATE OR MAKE UP ANYTHING.
-""".format(tools_available=tools_available)
-    return tooluse_prompt.strip()
-
-def should_retry_tool_use(response, tool_uses=None):
-    """
-    Check if the response attempts to use a tool,
-    but ran out of output context.
-    """
-    # If there are tool uses, we don't need to check for retry
-    if tool_uses is not None and len(tool_uses) > 0:
-        return False
-
-    # Find positions of the markers
-    json_pos = response.find("<json>")
-    tool_name_pos = response.find("tool_name")
-    tool_input_pos = response.find("tool_input")
-
-    # Check ordering and length condition
-    if (
-        json_pos != -1
-        and tool_name_pos != -1
-        and tool_input_pos != -1
-        and json_pos < tool_name_pos < tool_input_pos
-        and len(response) >= 2000
-    ):
-        return True
-
-    # No retry
-    return False
-
-def check_for_tool_uses(response):
-    """
-    Checks if the response contains one or more tool calls in json code blocks.
-    Returns a list of tool use dictionaries.
-    """
-    pattern = r'<json>\s*(\{.*?\})\s*</json>'
-    matches = re.findall(pattern, response, re.DOTALL)
-    tool_uses = []
-
-    for match in matches:
-        try:
-            tool_use = json.loads(match)
-            if 'tool_name' not in tool_use or 'tool_input' not in tool_use:
-                continue  # Skip invalid tool use
-            tool_uses.append(tool_use)
-        except json.JSONDecodeError:
-            continue  # Skip malformed JSON blocks
-
-    return tool_uses if tool_uses else None
-
-def process_tool_call(tools_dict, tool_name, tool_input):
-    try:
-        if tool_name in tools_dict:
-            return tools_dict[tool_name]['function'](**tool_input)
-        else:
-            return f"Error: Tool '{tool_name}' not found"
-    except Exception as e:
-        return f"Error executing tool '{tool_name}': {str(e)}"
 
 def chat_with_agent(
     msg,
     model="claude-4-sonnet-genai",
     msg_history=None,
     logging=print,
-    tools_available=[],  # Empty list means no tools, 'all' means all tools
-    multiple_tool_calls=False,  # Whether to allow multiple tool calls in a single response
-    max_tool_calls=40,  # Maximum number of tool calls allowed in a single response, -1 for unlimited
+    tools_available=[],   # Empty list means no tools, 'all' means all tools
+    multiple_tool_calls=False,  # Whether to allow multiple tool calls per turn
+    max_tool_calls=40,    # Maximum tool calls allowed (-1 for unlimited)
     return_on_error=False,  # Return partial history instead of raising provider/tool-loop errors
 ):
-    get_response_fn = get_response_from_llm
-    # Construct message
     if msg_history is None:
         msg_history = []
-    new_msg_history = msg_history
+
+    # Load HA tools and translate to OpenAI/litellm tool spec. Litellm
+    # auto-normalizes this to Anthropic's {name, description, input_schema}
+    # shape on the wire.
+    ha_tools = load_tools(logging=logging, names=tools_available)
+    tools_dict = {t["info"]["name"]: t for t in ha_tools}
+    litellm_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": t["info"]["name"],
+                "description": t["info"]["description"],
+                "parameters": t["info"]["input_schema"],
+            },
+        }
+        for t in ha_tools
+    ]
+
+    # Litellm uses OpenAI-style messages. HA's existing history is
+    # [{role, text}, ...]; convert to {role, content}.
+    messages = []
+    for m in msg_history:
+        messages.append({"role": m["role"], "content": m.get("text", m.get("content", ""))})
+    messages.append({"role": "user", "content": msg})
+
+    logging(f"Input: {repr(msg)}")
+    num_tool_calls = 0
 
     try:
-        # Load all tools
-        all_tools = load_tools(logging=logging, names=tools_available)
-        tools_dict = {tool['info']['name']: tool for tool in all_tools}
-        system_msg = f"{get_tooluse_prompt([tool['info'] for tool in all_tools])}\n\n"
-        num_tool_calls = 0
+        while True:
+            kwargs = {"model": model, "messages": messages}
+            # Reasoning chat models (gpt-5*, o-series) use max_completion_tokens
+            # and accept reasoning_effort. Legacy claude-3-haiku is capped at
+            # 4096 output tokens. Everything else uses max_tokens.
+            reasoning_effort = _openai_reasoning_effort(model)
+            if reasoning_effort:
+                kwargs["reasoning_effort"] = reasoning_effort
+            if "gpt-5" in model or model.startswith(("openai/o", "o")):
+                kwargs["max_completion_tokens"] = MAX_TOKENS
+            elif "claude-3-haiku" in model:
+                kwargs["max_tokens"] = min(MAX_TOKENS, 4096)
+            else:
+                kwargs["max_tokens"] = MAX_TOKENS
 
-        # Call API
-        logging(f"Input: {repr(msg)}")
-        response, new_msg_history, info = get_response_fn(
-            msg=system_msg + msg,
-            model=model,
-            msg_history=new_msg_history,
-        )
-        log_llm_usage(logging, info)
-        logging(f"Output: {repr(response)}")
-        # logging(f"Info: {repr(info)}")
+            if litellm_tools:
+                kwargs["tools"] = litellm_tools
+                kwargs["tool_choice"] = "auto"
+                if not multiple_tool_calls:
+                    kwargs["parallel_tool_calls"] = False
 
-        # Tool use
-        tool_uses = check_for_tool_uses(response)
-        retry_tool_use = should_retry_tool_use(response, tool_uses)
-        while tool_uses or retry_tool_use:
-            # Check for max tool calls
+            response = litellm.completion(**kwargs)
+            msg_obj = response.choices[0].message
+            finish = response.choices[0].finish_reason
+            logging(f"Output: {repr(msg_obj.content)}  finish_reason={finish}")
+            log_llm_usage(logging, _extract_response_info(response, model))
+
+            # Append the assistant turn (with tool_calls if any) so the next
+            # call sees the full conversation context.
+            assistant_entry = {"role": "assistant", "content": msg_obj.content or ""}
+            if msg_obj.tool_calls:
+                assistant_entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg_obj.tool_calls
+                ]
+            messages.append(assistant_entry)
+
+            # Loop exits when the model produces no tool_calls or signals
+            # finish_reason != 'tool_calls'.
+            if not msg_obj.tool_calls or finish != "tool_calls":
+                break
             if max_tool_calls > 0 and num_tool_calls >= max_tool_calls:
                 logging("Error: Maximum number of tool calls reached.")
                 break
 
-            tool_msgs = []
-
-            # Process tool uses
-            if tool_uses:
-                tool_uses = tool_uses if multiple_tool_calls else tool_uses[:1]
-                for tool_use in tool_uses:
-                    tool_name = tool_use['tool_name']
-                    tool_input = tool_use['tool_input']
-                    tool_output = process_tool_call(tools_dict, tool_name, tool_input)
-                    num_tool_calls += 1
-                    tool_msg = f'''<json>
-    {{
-        "tool_name": "{tool_name}",
-        "tool_input": {tool_input},
-        "tool_output": "{tool_output}"
-    }}
-    </json>'''.strip()
-                    logging(f"Tool output: {repr(tool_msg)}")
-                    tool_msgs.append(tool_msg)
-
-            # Check for retry
-            if retry_tool_use:
-                logging("Error: Output context exceeded. Please try again.")
-                tool_msgs.append("Error: Output context exceeded. Please try again.")
-
-            # Get tool response
-            response, new_msg_history, info = get_response_fn(
-                msg=system_msg + '\n\n'.join(tool_msgs),
-                model=model,
-                msg_history=new_msg_history,
-            )
-            log_llm_usage(logging, info)
-            logging(f"Output: {repr(response)}")
-            # logging(f"Info: {repr(info)}")
-
-            # Check for next tool use
-            tool_uses = check_for_tool_uses(response)
-            retry_tool_use = should_retry_tool_use(response, tool_uses)
-
+            # Execute each tool call and append a 'tool' role message per call.
+            tool_calls = msg_obj.tool_calls if multiple_tool_calls else msg_obj.tool_calls[:1]
+            for tc in tool_calls:
+                tool_name = tc.function.name
+                try:
+                    tool_input = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except json.JSONDecodeError:
+                    tool_input = {}
+                if tool_name in tools_dict:
+                    try:
+                        out = tools_dict[tool_name]["function"](**tool_input)
+                    except Exception as e:
+                        out = f"Error executing tool '{tool_name}': {e}"
+                else:
+                    out = f"Error: Tool '{tool_name}' not found"
+                if not isinstance(out, str):
+                    out = str(out)
+                logging(f"Tool output: {repr(out)}")
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": out})
+                num_tool_calls += 1
     except Exception as e:
         logging(f"Error: {str(e)}")
         if return_on_error:
-            return new_msg_history
-        raise e
+            # Convert what we have so far to HA's [{role,text}] shape and bail
+            # without raising. Caller wanted partial history on transport
+            # errors instead of an exception.
+            partial = []
+            for m in messages:
+                text = m.get("content") or ""
+                if m.get("tool_calls"):
+                    tc_strs = [
+                        f'<tool_use name="{c["function"]["name"]}">{c["function"]["arguments"]}</tool_use>'
+                        for c in m["tool_calls"]
+                    ]
+                    text = (text + "\n" + "\n".join(tc_strs)).strip()
+                partial.append({"role": m["role"], "text": text})
+            return partial
+        raise
 
+    # Convert back to HA's [{role, text}] shape so callers like
+    # task_agent.py:extract_jsons keep working unchanged.
+    new_msg_history = []
+    for m in messages:
+        text = m.get("content") or ""
+        if m.get("tool_calls"):
+            tc_strs = [
+                f'<tool_use name="{c["function"]["name"]}">{c["function"]["arguments"]}</tool_use>'
+                for c in m["tool_calls"]
+            ]
+            text = (text + "\n" + "\n".join(tc_strs)).strip()
+        new_msg_history.append({"role": m["role"], "text": text})
+
+    # Synthesize a terminal <json>{"response": "<final_text>"}</json> entry
+    # so utils/common.py:extract_jsons (called from task_agent.py) finds the
+    # expected wrapper unchanged.
+    final_text = ""
+    for m in reversed(new_msg_history):
+        if m["role"] == "assistant" and m["text"]:
+            final_text = m["text"]
+            break
+    new_msg_history.append({
+        "role": "assistant",
+        "text": f'<json>\n{json.dumps({"response": final_text})}\n</json>',
+    })
     return new_msg_history
 
+
 if __name__ == "__main__":
-    msg = """hello"""
-    new_msg_history = chat_with_agent(msg)
+    msg = "hello"
+    chat_with_agent(msg)
