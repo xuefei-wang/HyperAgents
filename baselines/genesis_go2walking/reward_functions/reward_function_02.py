@@ -72,7 +72,7 @@ def compute_reward(
         "action_rate_penalty": action_rate_scale * action_rate_penalty,
         "dof_pos_penalty": dof_pos_scale * dof_pos_penalty,
     }
-    
+
     reward_scales = {
         "lin_vel_x_reward": lin_vel_x_scale,
         "lin_vel_y_reward": lin_vel_y_scale,
@@ -83,5 +83,5 @@ def compute_reward(
         "action_rate_penalty": action_rate_scale,
         "dof_pos_penalty": dof_pos_scale,
     }
-    
+
     return total_reward, reward_components, reward_scales

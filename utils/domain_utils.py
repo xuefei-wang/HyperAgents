@@ -11,6 +11,10 @@ def get_domain_score_key(domain):
     # Polyglot domain
     elif "polyglot" in domain:
         return "accuracy_score"
+    elif domain == "swebench_pro":
+        return "accuracy_score"
+    elif domain in ["arc1", "arc2"]:
+        return "accuracy_score"
     # IMO proof domain
     elif domain == "imo_proof":
         return "points_percentage"
@@ -32,6 +36,10 @@ def get_domain_splits(domain, eval_test=False):
     # Polyglot domain
     elif "polyglot" in domain:
         return ["train"]
+    elif domain == "swebench_pro":
+        return ["train"]
+    elif domain in ["arc1", "arc2"]:
+        return ["train"]
     # IMO Proof domain
     elif domain == "imo_proof":
         return ["train"]
@@ -49,6 +57,10 @@ def can_domain_ensembled(domain):
         return False
     # Polyglot domain
     elif "polyglot" in domain:
+        return False
+    elif domain == "swebench_pro":
+        return False
+    elif domain in ["arc1", "arc2"]:
         return False
     # IMO grading domain
     elif domain == "imo_grading":
@@ -71,6 +83,10 @@ def get_domain_eval_subset(domain):
     # Polyglot domain
     elif "polyglot" in domain:
         return ""
+    elif domain == "swebench_pro":
+        return ""
+    elif domain in ["arc1", "arc2"]:
+        return ""
     # IMO grading domain
     elif domain == "imo_grading":
         return "_filtered_100_train"
@@ -92,6 +108,10 @@ def get_domain_test_subset(domain):
     # Polyglot domain
     elif "polyglot" in domain:
         return ""
+    elif domain == "swebench_pro":
+        return ""
+    elif domain in ["arc1", "arc2"]:
+        return ""
     # IMO grading domain
     elif domain == "imo_grading":
         return "_filtered_100_test"
@@ -112,6 +132,10 @@ def get_domain_stagedeval_samples(domain):
         return 3
     # Polyglot domain
     elif "polyglot" in domain:
+        return 10
+    elif domain == "swebench_pro":
+        return 5
+    elif domain in ["arc1", "arc2"]:
         return 10
     # IMO grading domain
     elif domain == "imo_grading":
@@ -137,6 +161,12 @@ def get_domain_stagedeval_frac(domain):
     # Polyglot domain
     elif "polyglot" in domain:
         return 10/60
+    elif domain == "swebench_pro":
+        return 5/50
+    elif domain == "arc1":
+        return 10/52
+    elif domain == "arc2":
+        return 10/68
     # IMO grading domain
     elif domain == "imo_grading":
         return 10/100
@@ -157,6 +187,8 @@ def has_domain_val_subset(domain):
         return False
     # Polyglot domain
     elif "polyglot" in domain:
+        return False
+    elif domain == "swebench_pro":
         return False
     # IMO grading domain
     elif domain == "imo_grading":

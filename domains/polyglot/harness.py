@@ -9,13 +9,21 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import docker
 from datasets import load_dataset
+from dotenv import load_dotenv
 
+from agent.llm import polyglot_model_from_env
 from utils.constants import REPO_NAME
 from utils.common import load_json_file
 from domains.polyglot.testrepo_prompt import get_test_description
 from domains.polyglot.test_spec import make_test_spec
 from domains.polyglot.docker_build import build_env_images, build_container, cleanup_container
-from domains.polyglot.constants import MAP_REPO_VERSION_TO_SPECS, TEST_COMMANDS
+from domains.polyglot.constants import (
+    MAP_REPO_VERSION_TO_SPECS,
+    TEST_COMMANDS,
+    POLYGLOT_METADATA_PATH,
+    POLYGLOT_SOURCE_DIR,
+    POLYGLOT_TASK_MAP_DIR,
+)
 from domains.polyglot.git_utils import filter_patch_by_files, remove_patch_by_files
 from domains.polyglot.utils import (
     copy_to_container,
@@ -25,6 +33,44 @@ from domains.polyglot.utils import (
     safe_log,
     setup_logger,
 )
+
+
+def _load_shared_env() -> None:
+    repo_root = Path(__file__).resolve().parents[4]
+    env_paths = [
+        repo_root / "configs" / "providers" / ".env.shared",
+        repo_root / "configs" / "providers" / ".env.haiku",
+        repo_root / "configs" / "providers" / ".env.openai",
+        repo_root / "configs" / "models" / "shared.env",
+    ]
+    for env_path in env_paths:
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+
+
+def _collect_runtime_env(names):
+    env_vars = {}
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            env_vars[name] = value
+    return env_vars
+
+
+def _normalize_dataset_repo_paths(dataset):
+    """Make metadata-generated repo paths portable across local and remote workspaces."""
+    normalized = []
+    for entry in dataset:
+        entry = dict(entry)
+        repo = Path(entry.get("repo", ""))
+        if not repo.exists():
+            language = entry.get("language")
+            task_name = entry.get("task_name")
+            candidate = POLYGLOT_SOURCE_DIR / language / "exercises" / "practice" / task_name
+            if candidate.exists():
+                entry["repo"] = str(candidate)
+        normalized.append(entry)
+    return normalized
 
 
 def get_eval_script(commands):
@@ -51,6 +97,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         return result
 
     try:
+        _load_shared_env()
         # Create and start the Docker container
         client = docker.from_env()
         run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -67,9 +114,10 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
 
         # Copy the necessary files and requirements to the container
         root_dir = root_dir if root_dir is not None else "./"
+        task_agent_requirements = os.path.join(root_dir, 'domains/polyglot/task_agent_requirements.txt')
         copy_to_container(container, os.path.join(root_dir, 'task_agent.py'), f'/{REPO_NAME}/task_agent.py')
         copy_to_container(container, os.path.join(root_dir, 'run_task_agent.py'), f'/{REPO_NAME}/run_task_agent.py')
-        copy_to_container(container, os.path.join(root_dir, 'requirements.txt'), f'/{REPO_NAME}/requirements.txt')
+        copy_to_container(container, task_agent_requirements, f'/{REPO_NAME}/requirements.txt')
         copy_to_container(container, os.path.join(root_dir, 'agent/'), f'/{REPO_NAME}/agent/')
         copy_to_container(container, os.path.join(root_dir, 'utils/'), f'/{REPO_NAME}/utils/')
         copy_to_container(container, os.path.join(root_dir, 'meta_agent.py'), f'/{REPO_NAME}/meta_agent.py')
@@ -78,7 +126,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         chat_history_file_container = f'/{REPO_NAME}/{chat_history_file.name}'
 
         # See the checked repo
-        exec_result = container.exec_run("ls -R /testbed", workdir='/') 
+        exec_result = container.exec_run("ls -R /testbed", workdir='/')
         log_container_output(exec_result)
 
         # Get test description
@@ -101,12 +149,28 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         log_container_output(exec_result)
 
         # Run the agent
-        env_vars = {
-            "ANTHROPIC_API_KEY": os.getenv('ANTHROPIC_API_KEY'),
-            "OPENAI_API_KEY": os.getenv('OPENAI_API_KEY'),
-            "METAGEN_ACCESS_TOKEN": os.getenv('METAGEN_ACCESS_TOKEN'),
-        }
+        env_vars = _collect_runtime_env([
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "METAGEN_ACCESS_TOKEN",
+            "AWS_REGION",
+            "AWS_REGION_NAME",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "MODEL_PROVIDER",
+            "MODEL_AUTH_MODE",
+            "MODEL",
+            "HYPERAGENTS_TASK_MODEL",
+            "HYPERAGENTS_POLYGLOT_MODEL",
+            "HYPERAGENTS_REASONING_EFFORT",
+            "OPENAI_REASONING_EFFORT",
+            "REASONING_EFFORT",
+        ])
         safe_log("Running the agent")
+        agent_model = polyglot_model_from_env()
         cmd = [
             "timeout", "600",  # 10 min timeout
             "python", f"/{REPO_NAME}/run_task_agent.py",
@@ -117,7 +181,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             "--outdir", f"/{REPO_NAME}/",
             "--test_description", test_description,
             "--language", entry['language'],
-            "--model", "o3-mini",
+            "--model", agent_model,
         ]
         exec_result = container.exec_run(cmd, environment=env_vars, workdir='/testbed/')
         log_container_output(exec_result)
@@ -156,7 +220,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         }
             out_fname.write_text(json.dumps(result, indent=4))
             return {"success": True, "instance_id": instance_id, "eval_result": eval_result}
-    
+
 
         exec_result = container.exec_run("git -C /testbed stash push " + " ".join(entry['files']['solution']), workdir='/')
         log_container_output(exec_result)
@@ -166,7 +230,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         log_container_output(exec_result)
         exec_result = container.exec_run("git -C /testbed stash pop", workdir='/')
         log_container_output(exec_result)
-        
+
         safe_log("Running the eval")
         language = entry['language']
         test_command = TEST_COMMANDS[language]
@@ -174,9 +238,9 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         eval_file.write_text(get_eval_script(test_command))
 
         copy_to_container(container, eval_file, '/testbed/eval.sh')
-        exec_result = container.exec_run("ls -R /testbed", workdir='/') 
+        exec_result = container.exec_run("ls -R /testbed", workdir='/')
         log_container_output(exec_result)
-        exec_result = container.exec_run("chmod +x /testbed/eval.sh", workdir='/') 
+        exec_result = container.exec_run("chmod +x /testbed/eval.sh", workdir='/')
         log_container_output(exec_result)
 
         exec_result = container.exec_run("timeout 120 ./eval.sh", workdir='/testbed')
@@ -186,7 +250,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             eval_result = 'resolved'
         else:
             eval_result = 'unresolved'
-        
+
         # Write result to file
         result = {
             "instance_id": instance_id,
@@ -201,7 +265,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         return {"success": True, "instance_id": instance_id, "eval_result": eval_result}
 
     except Exception as e:
-        
+
         # Check if eval_result exists in local scope
         if 'eval_result' not in locals():
             eval_result = 'incomplete'
@@ -222,7 +286,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             "success": False
         }
         out_fname.write_text(json.dumps(result, indent=4))
-        
+
         print(f"Error processing entry {instance_id}: {str(e)}")
         return {"success": False, "instance_id": instance_id, "eval_result": eval_result}
 
@@ -234,7 +298,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             print(f"Error cleaning up Docker container for {instance_id}: {e}")
 
 def harness(
-        dataset_path="./domains/polyglot/polyglot_benchmark_metadata.json",
+        dataset_path=str(POLYGLOT_METADATA_PATH),
         test_task_list=None,
         num_samples=-1,
         max_workers=4,
@@ -247,8 +311,9 @@ def harness(
         root_dir=None,
     ):
     """
+    _load_shared_env()
     Parallel processing harness using ThreadPoolExecutor.
-    
+
     Args:
         test_task_list: List of task IDs to process (None for all)
         num_samples: Number of samples to process (-1 for all)
@@ -275,7 +340,8 @@ def harness(
         raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
     with open(dataset_path) as f:
         dataset = json.load(f)
-    
+    dataset = _normalize_dataset_repo_paths(dataset)
+
     # Ensure that necessary directories exist
     if model_name_or_path is None:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -283,9 +349,12 @@ def harness(
     pred_dname = Path(pred_dname)
     pred_dname.mkdir(exist_ok=True)
     out_dnames = []
-    
+
     # Prepare the dataset entries
     entries = list(dataset)
+    # Capture the full benchmark cardinality BEFORE subset filtering so the
+    # report can distinguish "instances attempted" vs "benchmark size".
+    benchmark_total_instances = len(entries)
     if test_task_list:
         entries = [entry for entry in entries if entry['instance_id'] in test_task_list]
     if num_samples > 0:
@@ -294,15 +363,15 @@ def harness(
     # Build the environment images
     client = docker.from_env()
     build_env_images(client, dataset=entries, max_workers=max_workers, force_rebuild=False)
-    
+
     # Define a function to handle a single evaluation for all specified issues
     def process_evaluation(eval_idx):
         model_name_or_path_inst = f"{model_name_or_path}_{eval_idx}"
         out_dname = pred_dname / model_name_or_path_inst
         out_dname.mkdir(exist_ok=True)
-        
+
         print(f"Starting evaluation {eval_idx} for model {model_name_or_path}")
-        
+
         # Process entries in parallel
         results = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -311,7 +380,7 @@ def harness(
                 executor.submit(process_entry, entry, out_dname, model_name_or_path_inst, model_patch_paths, root_dir): entry
                 for entry in entries
             }
-            
+
             # Process completed tasks as they finish
             for future in as_completed(future_to_entry):
                 result = future.result()
@@ -321,7 +390,7 @@ def harness(
                 else:
                     print(f"Failed to process entry {result['instance_id']} for eval {eval_idx}: {result.get('error', 'Unknown error')}")
         # Get final results from completed futures
-            
+
         return out_dname, results
 
     out_dname, results = process_evaluation(0)
@@ -346,12 +415,19 @@ def harness(
             elif result.get("eval_result") == "unresolved":
                 unresolved_ids.append(result["instance_id"])
             elif result.get("eval_result") == "empty_patch":
-                empty_patch_ids.append(result["instance_id"]) 
+                empty_patch_ids.append(result["instance_id"])
             else:
                 error_ids.append(result["instance_id"])
-    
+
+    # NOTE: `total_instances` refers to the instances actually attempted in
+    # this run (the filtered `entries` subset). `benchmark_total_instances`
+    # preserves the full benchmark cardinality (size of the loaded dataset
+    # prior to subset filtering) so downstream analyses that want the full
+    # denominator can still compute it. This aligns with the ARC / SWE-bench
+    # Pro report convention.
     report = {
-        "total_instances": len(dataset),
+        "total_instances": len(entries),
+        "benchmark_total_instances": benchmark_total_instances,
         "submitted_instances": len(results),
         "completed_instances": len(completed_ids),
         "resolved_instances": len(resolved_ids),
@@ -397,11 +473,15 @@ def main():
     args = parser.parse_args()
 
     if args.subset == "small":
-        task_list = load_json_file("./domains/polyglot/subsets/small.json")
+        benchmark_subset = POLYGLOT_TASK_MAP_DIR / "small.json"
+        fallback_subset = "./domains/polyglot/subsets/small.json"
+        task_list = load_json_file(str(benchmark_subset if benchmark_subset.exists() else fallback_subset))
     elif args.subset == "medium":
-        task_list = load_json_file("./domains/polyglot/subsets/medium.json")
+        benchmark_subset = POLYGLOT_TASK_MAP_DIR / "medium.json"
+        fallback_subset = "./domains/polyglot/subsets/medium.json"
+        task_list = load_json_file(str(benchmark_subset if benchmark_subset.exists() else fallback_subset))
     else:
-        with open("./domains/polyglot/polyglot_benchmark_metadata.json") as f:
+        with open(POLYGLOT_METADATA_PATH) as f:
             metadata = json.loads(f.read())
             language_task_list = [entry["instance_id"] for entry in metadata if entry["instance_id"].startswith("python")]
             # Create a list of all tasks from metadata
@@ -411,7 +491,7 @@ def main():
 
     # Run the parallel harness
     harness(
-        dataset_path="./domains/polyglot/polyglot_benchmark_metadata.json",
+        dataset_path=str(POLYGLOT_METADATA_PATH),
         test_task_list=task_list,
         num_samples=args.num_samples,
         max_workers=args.max_workers,

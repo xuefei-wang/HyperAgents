@@ -1,6 +1,8 @@
+from agent.llm import OPENAI_MODEL
+
 QUESTION_ID = "Problem ID"
 GROUND_TRUTH_KEY = "Solution"
-MODEL = "gpt-o4-mini-genai"
+MODEL = OPENAI_MODEL
 
 def format_input_dict(row):
     # Extract the inputs for the task from the row

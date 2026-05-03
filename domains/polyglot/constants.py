@@ -1,10 +1,18 @@
 from pathlib import Path
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
+HYPERAGENTS_ROOT = Path(__file__).resolve().parents[2]
+
+POLYGLOT_BENCHMARK_DIR = WORKSPACE_ROOT / "benchmarks/polyglot"
+POLYGLOT_SOURCE_DIR = POLYGLOT_BENCHMARK_DIR / "source"
+POLYGLOT_TASK_MAP_DIR = POLYGLOT_BENCHMARK_DIR / "task_maps"
+POLYGLOT_METADATA_PATH = POLYGLOT_SOURCE_DIR / "polyglot_benchmark_metadata.json"
+
 # Constants - Evaluation Log Directories
-BASE_IMAGE_BUILD_DIR = Path("./domains/polyglot/logs/build_images/base")
-ENV_IMAGE_BUILD_DIR = Path("./domains/polyglot/logs/build_images/env")
-INSTANCE_IMAGE_BUILD_DIR = Path("./domains/polyglot/logs/build_images/instances")
-RUN_EVALUATION_LOG_DIR = Path("./domains/polyglot/logs/run_evaluation")
+BASE_IMAGE_BUILD_DIR = HYPERAGENTS_ROOT / "domains/polyglot/logs/build_images/base"
+ENV_IMAGE_BUILD_DIR = HYPERAGENTS_ROOT / "domains/polyglot/logs/build_images/env"
+INSTANCE_IMAGE_BUILD_DIR = HYPERAGENTS_ROOT / "domains/polyglot/logs/build_images/instances"
+RUN_EVALUATION_LOG_DIR = HYPERAGENTS_ROOT / "domains/polyglot/logs/run_evaluation"
 
 NPM_TEST_SH = """#!/bin/bash
 
@@ -42,7 +50,7 @@ NPM_TEST_COMMANDS = [
 CPP_TEST_COMMANDS = [
     "set -e",
     "[ ! -d \"build\" ] && mkdir build",
-    "cd build", 
+    "cd build",
     "cmake -DEXERCISM_RUN_ALL_TESTS=1 -G \"Unix Makefiles\" ..",
     "make",
     "cd ../"
@@ -54,7 +62,7 @@ TEST_COMMANDS = {
     "rust": ["cargo test -- --include-ignored"],
     "go": ["go test ./..."],
     "javascript": NPM_TEST_COMMANDS,
-    "cpp": CPP_TEST_COMMANDS, 
+    "cpp": CPP_TEST_COMMANDS,
     "java": ["./gradlew test"],
 }
 
@@ -62,7 +70,7 @@ PYTHON_SPECS = {
     "python": "3.11",
     "pip_packages": [
         "flake8~=5.0.4",
-        "pylint~=2.17.1", 
+        "pylint~=2.17.1",
         "black==22.3.0",
         "yapf~=0.32.0",
         "tomli>=1.1.0",
@@ -102,7 +110,7 @@ GENERIC_SPECS = {
 MAP_REPO_VERSION_TO_SPECS = {
     "python": PYTHON_SPECS,
     "rust": GENERIC_SPECS["rust"],
-    "go": GENERIC_SPECS["go"], 
+    "go": GENERIC_SPECS["go"],
     "javascript": GENERIC_SPECS["javascript"],
     "cpp": GENERIC_SPECS["cpp"],
     "java": GENERIC_SPECS["java"]

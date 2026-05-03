@@ -6,8 +6,10 @@ import hashlib
 import json
 import platform
 import re
+import subprocess
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Union, cast
 
 from domains.polyglot.constants import (
@@ -21,10 +23,34 @@ from domains.polyglot.dockerfiles import (
     get_dockerfile_env,
     get_dockerfile_instance,
 )
-from swebench.harness.utils import (
-    get_requirements,
-    get_environment_yml,
-)
+
+
+def get_requirements(instance: dict) -> str:
+    repo = instance.get("repo")
+    if not repo:
+        return ""
+    for candidate in ["requirements.txt", "requirements-dev.txt"]:
+        path = re.sub(r"//+", "/", f"{repo}/{candidate}")
+        try:
+            with open(path, "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            continue
+    return ""
+
+
+def get_environment_yml(instance: dict, env_name: str) -> str:
+    repo = instance.get("repo")
+    if not repo:
+        return ""
+    for candidate in ["environment.yml", "environment.yaml"]:
+        path = re.sub(r"//+", "/", f"{repo}/{candidate}")
+        try:
+            with open(path, "r") as f:
+                return f.read()
+        except FileNotFoundError:
+            continue
+    return ""
 
 DIFF_MODIFIED_FILE_REGEX = r"--- a/(.*)"
 
@@ -40,6 +66,7 @@ class TestSpec:
     eval_script_list: list[str]
     env_script_list: list[str]
     arch: str
+    base_commit: str
 
     @property
     def setup_env_script(self):
@@ -74,7 +101,26 @@ class TestSpec:
 
     @property
     def instance_image_key(self):
-        return f"pb.eval.{self.arch}.{self.instance_id}:latest"
+        hash_object = hashlib.sha256()
+        hash_object.update(self.instance_id.encode("utf-8"))
+        hash_object.update(self.base_commit.encode("utf-8"))
+        hash_object.update(self._get_repo_state_key().encode("utf-8"))
+        hash_value = hash_object.hexdigest()[:12]
+        return f"pb.eval.{self.arch}.{self.instance_id}.{hash_value}:latest"
+
+    def _get_repo_state_key(self) -> str:
+        repo_path = Path(self.repo)
+        try:
+            return subprocess.check_output(
+                ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except Exception:
+            try:
+                return str(repo_path.stat().st_mtime_ns)
+            except FileNotFoundError:
+                return "missing-repo"
 
     def get_instance_container_name(self, run_id=None):
         if not run_id:
@@ -118,7 +164,7 @@ def make_repo_script_list(specs, repo, repo_directory, base_commit, env_name):
     This is the setup script for the instance image.
     """
     setup_commands = [
-        f"cd /{repo}",
+        "cd /repo_source",
         f"git clone . {repo_directory}",
         f"chmod -R 777 {repo_directory}",  # So nonroot user can run tests
         f"cd {repo_directory}",
@@ -318,4 +364,5 @@ def make_test_spec(instance: dict) -> TestSpec:
         repo_script_list=repo_script_list,
         eval_script_list=eval_script_list,
         arch=arch,
+        base_commit=base_commit,
     )

@@ -64,4 +64,3 @@ python -m domains.report --domain paper_review --dname ./outputs/initial_paper_r
 # python -m domains.polyglot.prepare_polyglot_dataset
 # python -m domains.polyglot.harness --subset small --output_dir ./outputs/initial_polyglot_0 --model_name_or_path eval_run
 # python -m domains.polyglot.report --output_dir ./outputs/initial_polyglot_0 --model_name_or_path eval_run
-

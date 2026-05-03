@@ -122,7 +122,7 @@ if __name__ == "__main__":
     # Load archive
     archive = load_archive_data(os.path.join(output_dir, 'archive.jsonl'), last_only=True)['archive']
     print(f"Archive length: {len(archive)}")
-    
+
     # Get scores for each node
     genid_to_scores = {}
     for genid in archive:

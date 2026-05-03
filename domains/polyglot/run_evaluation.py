@@ -122,7 +122,7 @@ def run_instance(
         )
         if val.exit_code != 0:
             logger.info(f"Failed to apply patch to container, trying again...")
-            
+
             # try "patch --batch --fuzz=5 -p1 -i {patch_path}" to try again
             val = container.exec_run(
                 "patch --batch --fuzz=5 -p1 -i /tmp/patch.diff",
@@ -310,7 +310,7 @@ def get_dataset_from_preds(
         missing_preds = set(instance_ids) - set(predictions.keys())
         if missing_preds:
             print(f"Warning: Missing predictions for {len(missing_preds)} instance IDs.")
-    
+
     # check that all prediction IDs are in the dataset
     prediction_ids = set(predictions.keys())
     if prediction_ids - dataset_ids:
@@ -367,7 +367,7 @@ def make_run_report(
         full_dataset (list): List of all instances
         client (docker.DockerClient): Docker client
         run_id (str): Run ID
-    
+
     Returns:
         Path to report file
     """
@@ -386,7 +386,7 @@ def make_run_report(
     for instance in full_dataset:
         instance_id = instance[KEY_INSTANCE_ID]
         if instance_id not in predictions:
-            # skip instances without 
+            # skip instances without
             incomplete_ids.add(instance_id)
             continue
         prediction = predictions[instance_id]
@@ -427,8 +427,9 @@ def make_run_report(
 
     # print final report
     dataset_ids = {i[KEY_INSTANCE_ID] for i in full_dataset}
-    print(f"Total instances: {len(full_dataset)}")
-    print(f"Instances submitted: {len(set(predictions.keys()) & dataset_ids)}")
+    submitted_instances = len(set(predictions.keys()) & dataset_ids)
+    print(f"Benchmark total instances: {len(full_dataset)}")
+    print(f"Instances submitted: {submitted_instances}")
     print(f"Instances completed: {len(completed_ids)}")
     print(f"Instances incomplete: {len(incomplete_ids)}")
     print(f"Instances resolved: {len(resolved_ids)}")
@@ -439,8 +440,14 @@ def make_run_report(
     print(f"Unremoved images: {len(unremoved_images)}")
 
     # write report to file
+    # NOTE: `total_instances` refers to the instances actually attempted in this
+    # run (the predictions subset). `benchmark_total_instances` preserves the
+    # full benchmark cardinality (number of tasks in the loaded dataset) so
+    # downstream analyses that want the full denominator can still compute it.
+    # This aligns with the ARC / SWE-bench Pro report convention.
     report = {
-        "total_instances": len(full_dataset),
+        "total_instances": len(predictions),
+        "benchmark_total_instances": len(full_dataset),
         "submitted_instances": len(predictions),
         "completed_instances": len(completed_ids),
         "resolved_instances": len(resolved_ids),

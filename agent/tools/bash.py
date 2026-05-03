@@ -64,10 +64,10 @@ class BashSession:
             raise ValueError(
                 f"Timed out: bash has not returned in {self._timeout} seconds and must be restarted."
             )
-        
+
         # Send command
         self._process.stdin.write(
-            command.encode() + f"; echo '{self._sentinel}'\n".encode()
+            command.encode() + f"\necho '{self._sentinel}'\n".encode()
         )
         await self._process.stdin.drain()
 
@@ -75,19 +75,19 @@ class BashSession:
         try:
             output = ''
             start_time = asyncio.get_event_loop().time()
-            
+
             while True:
                 if asyncio.get_event_loop().time() - start_time > self._timeout:
                     self._timed_out = True
                     raise ValueError(
                         f"Timed out: bash has not returned in {self._timeout} seconds and must be restarted."
                     )
-                
+
                 await asyncio.sleep(self._output_delay)
                 # Read from the internal buffer
                 stdout_data = self._process.stdout._buffer.decode(errors='ignore')
                 stderr_data = self._process.stderr._buffer.decode(errors='ignore')
-                
+
                 if self._sentinel in stdout_data:
                     output = stdout_data[: stdout_data.index(self._sentinel)]
                     break

@@ -1,20 +1,44 @@
 import backoff
 import os
+from pathlib import Path
 from typing import Tuple
 import requests
 import litellm
 from dotenv import load_dotenv
 import json
 
+
+def _load_shared_env() -> None:
+    llm_path = Path(__file__).resolve()
+    parent_candidates = list(llm_path.parents)
+    candidate_roots = [
+        *(parent_candidates[idx] for idx in (1, 2, 3) if idx < len(parent_candidates)),
+        Path.cwd(),
+    ]
+    loaded = set()
+    for repo_root in candidate_roots:
+        for env_path in [
+            repo_root / "configs" / "providers" / ".env.shared",
+            repo_root / "configs" / "providers" / ".env.haiku",
+            repo_root / "configs" / "providers" / ".env.openai",
+            repo_root / "configs" / "models" / "shared.env",
+        ]:
+            if env_path in loaded:
+                continue
+            loaded.add(env_path)
+            if env_path.exists():
+                load_dotenv(env_path, override=False)
+
+
 load_dotenv()
+_load_shared_env()
 
 MAX_TOKENS = 16384
 
 CLAUDE_MODEL = "anthropic/claude-sonnet-4-5-20250929"
 CLAUDE_HAIKU_MODEL = "anthropic/claude-3-haiku-20240307"
 CLAUDE_35NEW_MODEL = "anthropic/claude-3-5-sonnet-20241022"
-OPENAI_MODEL = "openai/gpt-4o"
-OPENAI_MINI_MODEL = "openai/gpt-4o-mini"
+OPENAI_GPT54MINI_MODEL = "openai/gpt-5.4-mini"
 OPENAI_O3_MODEL = "openai/o3"
 OPENAI_O3MINI_MODEL = "openai/o3-mini"
 OPENAI_O4MINI_MODEL = "openai/o4-mini"
@@ -25,7 +49,134 @@ GEMINI_3_MODEL = "gemini/gemini-3-pro-preview"
 GEMINI_MODEL = "gemini/gemini-2.5-pro"
 GEMINI_FLASH_MODEL = "gemini/gemini-2.5-flash"
 
+DEFAULT_OPENAI_REASONING_EFFORT = "medium"
+
 litellm.drop_params=True
+
+
+def normalize_provider_model(provider, model):
+    model = (model or "").strip()
+    if not model:
+        return None
+    if "/" in model:
+        return model
+
+    provider = (provider or "").strip().lower()
+    if provider:
+        return f"{provider}/{model}"
+    if model.startswith(("gpt-", "o1", "o3", "o4")):
+        return f"openai/{model}"
+    if model.startswith("claude-"):
+        return f"anthropic/{model}"
+    return model
+
+
+def provider_profile_model_from_env():
+    return normalize_provider_model(os.getenv("MODEL_PROVIDER"), os.getenv("MODEL"))
+
+
+def task_model_from_env():
+    return (
+        os.getenv("HYPERAGENTS_TASK_MODEL")
+        or provider_profile_model_from_env()
+        or OPENAI_GPT54MINI_MODEL
+    )
+
+
+def polyglot_model_from_env():
+    return os.getenv("HYPERAGENTS_POLYGLOT_MODEL") or task_model_from_env()
+
+
+def meta_model_from_env():
+    return os.getenv("HYPERAGENTS_META_MODEL") or provider_profile_model_from_env() or CLAUDE_MODEL
+
+
+OPENAI_MODEL = task_model_from_env()
+OPENAI_MINI_MODEL = OPENAI_GPT54MINI_MODEL
+
+
+def _openai_reasoning_effort(model):
+    effort = (
+        os.getenv("HYPERAGENTS_REASONING_EFFORT")
+        or os.getenv("OPENAI_REASONING_EFFORT")
+        or os.getenv("REASONING_EFFORT")
+        or ""
+    ).strip()
+    if not effort:
+        return None
+
+    if _is_openai_reasoning_model(model):
+        return effort
+    return None
+
+
+def _provider_model_name(model):
+    return model.split("/")[-1].lower()
+
+
+def _is_openai_provider(model):
+    return "/" not in model or model.lower().startswith("openai/")
+
+
+def _is_o_series_model_name(model_name):
+    return model_name in {"o1", "o3", "o4"} or model_name.startswith(("o1-", "o3-", "o4-"))
+
+
+def _is_openai_reasoning_model(model):
+    if not _is_openai_provider(model):
+        return False
+    model_name = _provider_model_name(model)
+    return model_name.startswith("gpt-5") or _is_o_series_model_name(model_name)
+
+
+def _supports_custom_temperature(model, reasoning_effort=None):
+    if not _is_openai_provider(model):
+        return True
+    model_name = _provider_model_name(model)
+    if model_name.startswith(("gpt-5.1", "gpt-5.2")):
+        return reasoning_effort == "none"
+    if model_name.startswith("gpt-5"):
+        return False
+    return not _is_o_series_model_name(model_name)
+
+
+def _to_plain_dict(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    try:
+        return dict(value)
+    except Exception:
+        return {}
+
+
+def _extract_response_info(response, model):
+    usage = getattr(response, "usage", None)
+    if usage is None and isinstance(response, dict):
+        usage = response.get("usage")
+    usage_dict = _to_plain_dict(usage)
+
+    cost = None
+    try:
+        cost = litellm.completion_cost(completion_response=response)
+    except Exception:
+        cost = None
+
+    response_id = getattr(response, "id", None)
+    if response_id is None and isinstance(response, dict):
+        response_id = response.get("id")
+
+    return {
+        "model": model,
+        "response_id": response_id,
+        "usage": usage_dict,
+        "cost_usd": cost,
+    }
 
 @backoff.on_exception(
     backoff.expo,
@@ -57,15 +208,14 @@ def get_response_from_llm(
         "messages": new_msg_history,
     }
 
-    # GPT-5 and GPT-5-mini only support default temperature (1), skip it
-    # GPT-5.2 supports temperature
-    if model in ["openai/gpt-5", "openai/gpt-5-mini"]:
-        pass  # Don't set temperature
-    else:
+    reasoning_effort = _openai_reasoning_effort(model)
+
+    # GPT-5.1/5.2 only support temperature when reasoning effort is none.
+    if _supports_custom_temperature(model, reasoning_effort):
         completion_kwargs["temperature"] = temperature
 
-    # GPT-5 models require max_completion_tokens instead of max_tokens
-    if "gpt-5" in model:
+    # Reasoning chat models require max_completion_tokens instead of max_tokens.
+    if _is_openai_reasoning_model(model):
         completion_kwargs["max_completion_tokens"] = max_tokens
     else:
         # Claude Haiku has a 4096 token limit
@@ -74,7 +224,11 @@ def get_response_from_llm(
         else:
             completion_kwargs["max_tokens"] = max_tokens
 
+    if reasoning_effort:
+        completion_kwargs["reasoning_effort"] = reasoning_effort
+
     response = litellm.completion(**completion_kwargs)
+    info = _extract_response_info(response, model)
     response_text = response['choices'][0]['message']['content']  # pyright: ignore
     new_msg_history.append({"role": "assistant", "content": response['choices'][0]['message']['content']})
 
@@ -84,7 +238,7 @@ def get_response_from_llm(
         for msg in new_msg_history
     ]
 
-    return response_text, new_msg_history, {}
+    return response_text, new_msg_history, info
 
 
 if __name__ == "__main__":
@@ -101,6 +255,7 @@ if __name__ == "__main__":
         ("OPENAI_GPT52_MODEL", OPENAI_GPT52_MODEL),
         ("OPENAI_GPT5_MODEL", OPENAI_GPT5_MODEL),
         ("OPENAI_GPT5MINI_MODEL", OPENAI_GPT5MINI_MODEL),
+        ("OPENAI_GPT54MINI_MODEL", OPENAI_GPT54MINI_MODEL),
         ("GEMINI_3_MODEL", GEMINI_3_MODEL),
         ("GEMINI_MODEL", GEMINI_MODEL),
         ("GEMINI_FLASH_MODEL", GEMINI_FLASH_MODEL),

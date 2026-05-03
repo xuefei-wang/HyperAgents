@@ -580,7 +580,7 @@ class Evaluator:
 
             else:
                 raise ValueError("Could not find compute_reward function in Python code")
-    
+
     def extract_code_str(self, update_reward_str: str) -> str:
         """Extract Python code from various response formats.
 
@@ -604,8 +604,8 @@ class Evaluator:
         except:
             # raise ValueError("Failed to extract reward function from markdown code block")
             return ""
-        
-        # # Try to extract reward function from markdown code block 
+
+        # # Try to extract reward function from markdown code block
         # try:
         #     code_match = re.search(r"```python\s*(.*?)\s*```", stripped, re.DOTALL)
         #     if code_match:

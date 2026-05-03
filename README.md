@@ -26,6 +26,25 @@ ANTHROPIC_API_KEY=...
 GEMINI_API_KEY=...
 ```
 
+Model settings can be supplied in the environment or shared config files:
+
+```bash
+HYPERAGENTS_TASK_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_POLYGLOT_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_META_MODEL=openai/gpt-5.4-mini
+HYPERAGENTS_REASONING_EFFORT=medium
+```
+
+`OPENAI_REASONING_EFFORT` and `REASONING_EFFORT` are also accepted as
+reasoning-effort aliases. Explicit process environment values take precedence
+over shared config files. When `HYPERAGENTS_*_MODEL` is unset, HyperAgents also
+accepts provider-profile settings such as `MODEL_PROVIDER=openai` with
+`MODEL=gpt-5.4-mini`, normalized to LiteLLM form (`openai/gpt-5.4-mini`).
+
+Shared config files are discovered from these swarms-repo paths when present:
+`configs/providers/.env.shared`, `configs/providers/.env.haiku`,
+`configs/providers/.env.openai`, and `configs/models/shared.env`.
+
 ```bash
 # Install things
 sudo dnf install -y python3.12-devel
@@ -71,20 +90,19 @@ By default, outputs will be saved in `outputs/` directory.
 The experiment logs can be downloaded here: https://drive.google.com/drive/folders/164fKQWgLM18foOzSnpv0F_I3TNpX8u8-?usp=sharing
 
 ## Safety Consideration
-> [!WARNING]  
+> [!WARNING]
 > This repository involves executing untrusted, model-generated code. We strongly advise users to be aware of the associated safety risks. While it is highly unlikely that such code will perform overtly malicious actions under our current settings and with the models we use, it may still behave destructively due to limitations in model capability or alignment. By using this repository, you acknowledge and accept these risks.
 
 ## Citing
 If you find this project useful, please consider citing:
 ```bibtex
 @misc{zhang2026hyperagents,
-      title={Hyperagents}, 
+      title={Hyperagents},
       author={Jenny Zhang and Bingchen Zhao and Wannan Yang and Jakob Foerster and Jeff Clune and Minqi Jiang and Sam Devlin and Tatiana Shavrina},
       year={2026},
       eprint={2603.19461},
       archivePrefix={arXiv},
       primaryClass={cs.AI},
-      url={https://arxiv.org/abs/2603.19461}, 
+      url={https://arxiv.org/abs/2603.19461},
 }
 ```
-

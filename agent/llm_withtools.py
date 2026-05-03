@@ -4,6 +4,12 @@ import json
 from agent.llm import get_response_from_llm
 from agent.tools import load_tools
 
+
+def log_llm_usage(logging, info):
+    if not info:
+        return
+    logging(f"LLM_USAGE: {json.dumps(info, sort_keys=True)}")
+
 def get_tooluse_prompt(tool_infos=[]):
     """
     Get the prompt for using the available tools.
@@ -96,6 +102,7 @@ def chat_with_agent(
     tools_available=[],  # Empty list means no tools, 'all' means all tools
     multiple_tool_calls=False,  # Whether to allow multiple tool calls in a single response
     max_tool_calls=40,  # Maximum number of tool calls allowed in a single response, -1 for unlimited
+    return_on_error=False,  # Return partial history instead of raising provider/tool-loop errors
 ):
     get_response_fn = get_response_from_llm
     # Construct message
@@ -117,6 +124,7 @@ def chat_with_agent(
             model=model,
             msg_history=new_msg_history,
         )
+        log_llm_usage(logging, info)
         logging(f"Output: {repr(response)}")
         # logging(f"Info: {repr(info)}")
 
@@ -160,6 +168,7 @@ def chat_with_agent(
                 model=model,
                 msg_history=new_msg_history,
             )
+            log_llm_usage(logging, info)
             logging(f"Output: {repr(response)}")
             # logging(f"Info: {repr(info)}")
 
@@ -169,6 +178,8 @@ def chat_with_agent(
 
     except Exception as e:
         logging(f"Error: {str(e)}")
+        if return_on_error:
+            return new_msg_history
         raise e
 
     return new_msg_history

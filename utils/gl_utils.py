@@ -88,6 +88,14 @@ def get_score(domain, output_dir, genid, split="train"):
             if len(noerror_tasks) <= 0:
                 return None
 
+        if domain == "swebench_pro":
+            if eval_results.get("submitted_instances", 0) <= 0:
+                return None
+
+        if domain in ["arc1", "arc2"]:
+            if eval_results.get("submitted_pair_items", 0) <= 0:
+                return None
+
         return score
     except Exception:
         return None  # If score is missing or file not found
@@ -232,8 +240,12 @@ def setup_initial_gen(
             splits = get_domain_splits(domain, eval_test=eval_test)
             # Eval on training set
             gen_output_dir = os.path.join(output_dir, f"gen_initial/{domain}_eval")
+            initial_eval_dir = f"./outputs/initial_{domain}{subset}_0/"
+            if not os.path.exists(initial_eval_dir):
+                print(f"setup_initial_gen: skipping missing initial eval directory for {domain}: {initial_eval_dir}")
+                continue
             shutil.copytree(
-                f"./outputs/initial_{domain}{subset}_0/",
+                initial_eval_dir,
                 gen_output_dir,
                 dirs_exist_ok=True,
             )
@@ -281,9 +293,9 @@ def setup_initial_gen(
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
     }
-    if "polyglot" not in domains:
+    if not any(domain in domains for domain in ["polyglot", "swebench_pro", "arc1", "arc2"]):
         excluded_files.add("run_task_agent.py")
-    excluded_patterns = ["venv*", "__pycache__*", "*.png", "outputs_os*"]
+    excluded_patterns = ["venv*", ".venv*", "__pycache__*", "*.png", "outputs_os*"]
     if "ensemble" not in optimize_option or not any(can_domain_ensembled(d) for d in domains) and not copy_root_dir:
         excluded_patterns.append("*ensemble*")
     if not edit_select_parent and not copy_root_dir:
@@ -304,7 +316,7 @@ def setup_initial_gen(
         if os.path.isdir(os.path.join("./domains", folder_name)) and not any(folder_name in d for d in domains)
     })
     excluded_files_domains = {}
-    excluded_patterns_domains = ["venv*", "__pycache__*", "*.png"]
+    excluded_patterns_domains = ["venv*", ".venv*", "__pycache__*", "*.png"]
 
     # Function to ignore specific files/directories
     source_root = os.path.abspath(copy_root_dir or "./")

@@ -3,6 +3,22 @@ import git
 import subprocess
 
 
+IGNORED_DIFF_PARTS = {
+    "__pycache__",
+}
+IGNORED_DIFF_SUFFIXES = {
+    ".pyc",
+    ".pyo",
+}
+
+
+def _is_ignored_diff_path(path):
+    parts = path.replace("\\", "/").split("/")
+    return any(part in IGNORED_DIFF_PARTS for part in parts) or any(
+        path.endswith(suffix) for suffix in IGNORED_DIFF_SUFFIXES
+    )
+
+
 def get_git_commit_hash(repo_path='.'):
     try:
         # Load the repository
@@ -39,7 +55,18 @@ def diff_versus_commit(git_dname, commit):
     without modifying the repository state.
     """
     # Get diff of tracked files
-    diff_cmd = ["git", "-C", git_dname, "diff", commit]
+    diff_cmd = [
+        "git",
+        "-C",
+        git_dname,
+        "diff",
+        commit,
+        "--",
+        ".",
+        ":(exclude)**/__pycache__/**",
+        ":(exclude)**/*.pyc",
+        ":(exclude)**/*.pyo",
+    ]
     result = subprocess.run(diff_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     diff_output = result.stdout.decode()
 
@@ -50,8 +77,9 @@ def diff_versus_commit(git_dname, commit):
 
     # Generate diffs for untracked files
     for file in untracked_files:
+        if _is_ignored_diff_path(file):
+            continue
         # Diff untracked file against /dev/null (empty file)
-        file_path = os.path.join(git_dname, file)
         devnull = '/dev/null'
         if os.name == 'nt':  # Handle Windows
             devnull = 'NUL'

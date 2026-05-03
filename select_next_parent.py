@@ -19,7 +19,7 @@ def select_next_parent(archive, output_dir, domains):
         archive (list): List of generations in the archive.
         output_dir (str): Output directory for the generation.
         domains (list): List of domains to consider.
-    
+
     Returns:
         str: The selected parent.
     """

@@ -16,10 +16,12 @@ def load_tools(logging=print, names=[]):
 
             # Check if module has required functions
             if hasattr(module, 'tool_info') and hasattr(module, 'tool_function'):
+                info = module.tool_info()
                 tool_name = tool_file.stem
-                if names and (names == 'all' or tool_name in names):
+                declared_tool_name = info.get('name', tool_name)
+                if names and (names == 'all' or tool_name in names or declared_tool_name in names):
                     tools.append({
-                        'info': module.tool_info(),
+                        'info': info,
                         'function': module.tool_function,
                         'name': tool_name,
                     })

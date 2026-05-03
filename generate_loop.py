@@ -5,13 +5,31 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 
 import docker
-from analysis.plot_progress import plot_progress_single, plot_progress_together
-from analysis.visualize_archive import (
-    visualize_archive_single,
-    visualize_archive_together,
-)
+from dotenv import load_dotenv
+
+from agent.llm import meta_model_from_env
+
+try:
+    from analysis.plot_progress import plot_progress_single, plot_progress_together
+    from analysis.visualize_archive import (
+        visualize_archive_single,
+        visualize_archive_together,
+    )
+except ModuleNotFoundError:
+    def plot_progress_single(*args, **kwargs):
+        return None
+
+    def plot_progress_together(*args, **kwargs):
+        return None
+
+    def visualize_archive_single(*args, **kwargs):
+        return None
+
+    def visualize_archive_together(*args, **kwargs):
+        return None
 
 from utils.common import file_exist_and_not_empty, load_json_file
 from utils.constants import REPO_NAME
@@ -30,6 +48,7 @@ from utils.domain_utils import (
     get_domain_splits,
     get_domain_stagedeval_samples,
 )
+from domains.polyglot.constants import POLYGLOT_TASK_MAP_DIR
 from utils.gl_utils import (
     apply_diffs_container,
     get_patch_files,
@@ -45,6 +64,56 @@ from utils.gl_utils import (
     process_meta_patch_files,
 )
 
+SPECIAL_WORKSPACE_DOMAINS = {"polyglot", "swebench_pro", "arc1", "arc2"}
+
+
+def _first_existing_path(*paths):
+    for path in paths:
+        candidate = Path(path)
+        if candidate.exists():
+            return candidate
+    return Path(paths[-1])
+
+
+def _load_shared_env() -> None:
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    env_paths = [
+        os.path.join(repo_root, "configs", "providers", ".env.shared"),
+        os.path.join(repo_root, "configs", "providers", ".env.haiku"),
+        os.path.join(repo_root, "configs", "providers", ".env.openai"),
+        os.path.join(repo_root, "configs", "models", "shared.env"),
+    ]
+    for env_path in env_paths:
+        if os.path.exists(env_path):
+            load_dotenv(env_path, override=False)
+
+
+def _runtime_environment():
+    keys = [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENROUTER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "METAGEN_ACCESS_TOKEN",
+        "AWS_REGION",
+        "AWS_REGION_NAME",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "MODEL_PROVIDER",
+        "MODEL_AUTH_MODE",
+        "MODEL",
+        "HYPERAGENTS_TASK_MODEL",
+        "HYPERAGENTS_POLYGLOT_MODEL",
+        "HYPERAGENTS_META_MODEL",
+        "HYPERAGENTS_REASONING_EFFORT",
+        "OPENAI_REASONING_EFFORT",
+        "REASONING_EFFORT",
+    ]
+    return {key: os.environ[key] for key in keys if os.environ.get(key)}
+
 
 def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, num_samples=-1):
     # NOTE: the harness for polyglot is different because each task instance needs a docker container
@@ -56,10 +125,16 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
     model_name_or_path = "eval_run"
     patch_files = get_patch_files(output_dir, genid)
     run_next_eval = True
+    test_task_list = []
 
     # Small sample size evaluation for staged eval
     if not skip_staged_eval:
-        test_task_list = load_json_file("./domains/polyglot/subsets/small.json")
+        benchmark_subset = _first_existing_path(
+            POLYGLOT_TASK_MAP_DIR / "small.json",
+            POLYGLOT_TASK_MAP_DIR / "polyglot_small_50_seed0_ids.json",
+            "./domains/polyglot/subsets/small.json",
+        )
+        test_task_list = load_json_file(str(benchmark_subset))
         dnames = harness_polyglot(
             test_task_list=test_task_list,
             num_samples=-1,
@@ -78,9 +153,15 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
 
     # Check if additional evaluation should be run
     if run_next_eval:
-        test_task_list_more = load_json_file("./domains/polyglot/subsets/medium.json")
+        benchmark_subset = _first_existing_path(
+            POLYGLOT_TASK_MAP_DIR / "medium.json",
+            POLYGLOT_TASK_MAP_DIR / "polyglot_medium_50_seed0_ids.json",
+            "./domains/polyglot/subsets/medium.json",
+        )
+        test_task_list_more = load_json_file(str(benchmark_subset))
+        task_list = test_task_list + test_task_list_more
         dnames = harness_polyglot(
-            test_task_list=test_task_list + test_task_list_more,
+            test_task_list=task_list,
             num_samples=num_samples,
             max_workers=10,
             model_name_or_path=model_name_or_path,
@@ -91,10 +172,74 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
             output_dir=eval_output_dir,
             root_dir=root_dir,
         )
-        report_polyglot(output_dir=eval_output_dir, run_keyword=model_name_or_path, expected_num_tasks=len(test_task_list + test_task_list_more))
+        expected_num_tasks = min(num_samples, len(task_list)) if num_samples > 0 else len(task_list)
+        report_polyglot(
+            output_dir=eval_output_dir,
+            run_keyword=model_name_or_path,
+            expected_num_tasks=expected_num_tasks,
+        )
 
     # Update metadata
     update_node_metadata(output_dir, genid, {"run_full_eval": run_next_eval})
+
+
+def run_harness_swebench_pro(root_dir, output_dir, genid, num_samples=-1):
+    from domains.swebench_pro.harness import harness as harness_swebench_pro
+    from domains.swebench_pro.report import report as report_swebench_pro
+    from domains.swebench_pro.constants import SWEBENCH_PRO_DEFAULT_TASK_MAP
+
+    eval_output_dir = os.path.join(output_dir, f"gen_{genid}", "swebench_pro_eval")
+    model_name_or_path = "eval_run"
+    patch_files = get_patch_files(output_dir, genid)
+    task_map = load_json_file(str(SWEBENCH_PRO_DEFAULT_TASK_MAP))
+    task_ids = [task["task_id"] for task in task_map["tasks"]]
+
+    harness_swebench_pro(
+        test_task_list=task_ids,
+        num_samples=num_samples,
+        max_workers=6,
+        model_name_or_path=model_name_or_path,
+        model_patch_paths=patch_files,
+        pred_dname=eval_output_dir,
+        output_dir=eval_output_dir,
+        root_dir=root_dir,
+    )
+    expected_num_tasks = len(task_ids) if num_samples <= 0 else min(len(task_ids), num_samples)
+    report_swebench_pro(
+        output_dir=eval_output_dir,
+        run_keyword=model_name_or_path,
+        expected_num_tasks=expected_num_tasks,
+    )
+    update_node_metadata(output_dir, genid, {"run_full_eval": num_samples <= 0})
+
+
+def run_harness_arc(root_dir, output_dir, genid, domain, num_samples=-1, max_workers=4):
+    from domains.arc.harness import harness as harness_arc
+    from domains.arc.harness import selected_entry_count as selected_arc_entry_count
+    from domains.arc.report import report as report_arc
+    from domains.arc.constants import ARC_DEFAULT_MANIFESTS
+
+    eval_output_dir = os.path.join(output_dir, f"gen_{genid}", f"{domain}_eval")
+    model_name_or_path = "eval_run"
+    patch_files = get_patch_files(output_dir, genid)
+    expected_num_items = selected_arc_entry_count(ARC_DEFAULT_MANIFESTS[domain], num_samples)
+
+    harness_arc(
+        benchmark=domain,
+        num_samples=num_samples,
+        max_workers=max_workers,
+        model_name_or_path=model_name_or_path,
+        model_patch_paths=patch_files,
+        pred_dname=eval_output_dir,
+        output_dir=eval_output_dir,
+        root_dir=root_dir,
+    )
+    report_arc(
+        output_dir=eval_output_dir,
+        run_keyword=model_name_or_path,
+        expected_num_items=expected_num_items,
+    )
+    update_node_metadata(output_dir, genid, {"run_full_eval": num_samples <= 0})
 
 def select_next_parent_container(
     docker_client,
@@ -445,7 +590,9 @@ def generate(
     skip_staged_eval=False,
     edit_select_parent=False,
     max_generation=None,
+    meta_agent_timeout_seconds=21600,
 ):
+    _load_shared_env()
     # Setup local output folder
     prev_gen_dir = os.path.join(output_dir, f"gen_{parent_genid}")
     gen_output_dir = os.path.join(output_dir, f"gen_{current_genid}")
@@ -549,7 +696,7 @@ def generate(
             if run_baseline and "dgm" in run_baseline:
                 command = [
                     "timeout",
-                    "21600",  # 6h timeout
+                    str(meta_agent_timeout_seconds),
                     "python",
                     "coding_agent.py",
                     "--problem_statement",
@@ -564,9 +711,10 @@ def generate(
                     container_agentoutput_folder,
                 ]
             else:
+                meta_model = meta_model_from_env()
                 command = [
                     "timeout",
-                    "21600",  # 6h timeout
+                    str(meta_agent_timeout_seconds),
                     "python",
                     "run_meta_agent.py",
                     "--chat_history_file",
@@ -584,8 +732,7 @@ def generate(
                     "--iterations_left",
                     str(max_generation - current_genid),
                     *(
-                        # If domain is polyglot, for a fair comparison with DGM
-                        ["--model", "claude-3-5-sonnet-20241022"] if domains == ["polyglot"] else []
+                        ["--model", meta_model] if meta_model else []
                     ),
                 ]
 
@@ -594,7 +741,11 @@ def generate(
                 if run_baseline and "no_selfimprove" in run_baseline
                 else f"/{REPO_NAME}"
             )
-            exec_result = container.exec_run(cmd=command, workdir=run_workdir)
+            exec_result = container.exec_run(
+                cmd=command,
+                workdir=run_workdir,
+                environment=_runtime_environment(),
+            )
             log_container_output(exec_result)
             metadata["parent_agent_success"] = exec_result.exit_code == 0
 
@@ -736,7 +887,10 @@ def generate_loop(
     eval_test=False,
     skip_staged_eval=False,
     edit_select_parent=False,
+    eval_initial_as_gen0=False,
+    meta_agent_timeout_seconds=21600,
 ):
+    _load_shared_env()
     # Initialization
     docker_client = docker.DockerClient()
     parent_selection = "latest" if run_baseline == "no_archive" else parent_selection
@@ -785,7 +939,40 @@ def generate_loop(
         )
 
         # Create initial node
-        if meta_patch_files is None or len(meta_patch_files) <= 0:
+        if (meta_patch_files is None or len(meta_patch_files) <= 0) and eval_initial_as_gen0:
+            archive = update_and_save_archive(output_dir, [], new_node=0)
+            metadata = generate(
+                docker_client,
+                [d for d in domains if d not in SPECIAL_WORKSPACE_DOMAINS],
+                output_dir,
+                run_id,
+                current_genid=0,
+                parent_genid=None,
+                root_dir=root_dir,
+                root_commit=root_commit,
+                eval_samples=eval_samples,
+                eval_workers=eval_workers,
+                eval_subsets=eval_subsets,
+                meta_patch_files=None,
+                run_meta_agent=False,
+                run_baseline=run_baseline,
+                optimize_option=optimize_option,
+                agent_archive_path=agent_archive_path,
+                eval_test=eval_test,
+                skip_staged_eval=skip_staged_eval,
+                edit_select_parent=edit_select_parent,
+                max_generation=max_generation,
+                meta_agent_timeout_seconds=meta_agent_timeout_seconds,
+            )
+            print(f"generate_loop: generation 0 completed, parent None")
+            if metadata["run_eval"] and "polyglot" in domains:
+                run_harness_polyglot(root_dir, output_dir, 0, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+            if metadata["run_eval"] and "swebench_pro" in domains:
+                run_harness_swebench_pro(root_dir, output_dir, 0, num_samples=eval_samples[domains.index("swebench_pro")])
+            for arc_domain in ("arc1", "arc2"):
+                if metadata["run_eval"] and arc_domain in domains:
+                    run_harness_arc(root_dir, output_dir, 0, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
+        elif meta_patch_files is None or len(meta_patch_files) <= 0:
             archive = update_and_save_archive(output_dir, [], new_node="initial")
             metadata = {
                 "gen_output_dir": os.path.join(output_dir, f"gen_initial"),
@@ -821,7 +1008,7 @@ def generate_loop(
             archive = update_and_save_archive(output_dir, [], new_node=0)
             metadata = generate(
                 docker_client,
-                [d for d in domains if d != "polyglot"],
+                [d for d in domains if d not in SPECIAL_WORKSPACE_DOMAINS],
                 output_dir,
                 run_id,
                 current_genid=0,
@@ -840,11 +1027,17 @@ def generate_loop(
                 skip_staged_eval=skip_staged_eval,
                 edit_select_parent=edit_select_parent,
                 max_generation=max_generation,
+                meta_agent_timeout_seconds=meta_agent_timeout_seconds,
             )
             print(f"generate_loop: generation 0 completed, parent None")
             # Evaluate the agent on polyglot if needed
-            if "polyglot" in domains:
+            if metadata["run_eval"] and "polyglot" in domains:
                 run_harness_polyglot(root_dir, output_dir, 0, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+            if metadata["run_eval"] and "swebench_pro" in domains:
+                run_harness_swebench_pro(root_dir, output_dir, 0, num_samples=eval_samples[domains.index("swebench_pro")])
+            for arc_domain in ("arc1", "arc2"):
+                if metadata["run_eval"] and arc_domain in domains:
+                    run_harness_arc(root_dir, output_dir, 0, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
 
         # Evaluate the entire archive as an ensemble
         eval_ensemble = (
@@ -900,7 +1093,7 @@ def generate_loop(
     for current_genid in range(start_genid, max_generation + 1):
         metadata = generate(
             docker_client,
-            [d for d in domains if d != "polyglot"],
+            [d for d in domains if d not in SPECIAL_WORKSPACE_DOMAINS],
             output_dir,
             run_id,
             current_genid,
@@ -919,6 +1112,7 @@ def generate_loop(
             skip_staged_eval=skip_staged_eval,
             edit_select_parent=edit_select_parent,
             max_generation=max_generation,
+            meta_agent_timeout_seconds=meta_agent_timeout_seconds,
         )
 
         # NOTE: need to update and save archive before running ensembling eval
@@ -929,8 +1123,13 @@ def generate_loop(
             update_node_metadata(output_dir, parent_genid, {"valid_parent": False})
 
         # Evaluate the agent on polyglot if needed
-        if "polyglot" in domains:
+        if metadata["run_eval"] and "polyglot" in domains:
             run_harness_polyglot(root_dir, output_dir, current_genid, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+        if metadata["run_eval"] and "swebench_pro" in domains:
+            run_harness_swebench_pro(root_dir, output_dir, current_genid, num_samples=eval_samples[domains.index("swebench_pro")])
+        for arc_domain in ("arc1", "arc2"):
+            if metadata["run_eval"] and arc_domain in domains:
+                run_harness_arc(root_dir, output_dir, current_genid, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
 
         # Evaluate the entire archive as an ensemble
         eval_ensemble = (
@@ -1040,6 +1239,9 @@ if __name__ == "__main__":
             "genesis_go2walkback",
             "genesis_go2hop",
             "polyglot",  # separate harness from the rest
+            "swebench_pro",  # separate harness from the rest
+            "arc1",  # separate ARC UI-filesystem harness
+            "arc2",  # separate ARC UI-filesystem harness
             "imo_grading",
             "imo_proof",
         ],
@@ -1151,6 +1353,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to allow the agent to edit the selection mechanism",
     )
+    parser.add_argument(
+        "--eval_initial_as_gen0",
+        default=False,
+        action="store_true",
+        help="Evaluate the initial agent as gen_0 before starting self-improvement generations.",
+    )
+    parser.add_argument(
+        "--meta_agent_timeout_seconds",
+        type=int,
+        default=21600,
+        help="Wall-clock timeout for each meta-agent self-improvement attempt.",
+    )
     args = parser.parse_args()
 
     # Post-parse validation
@@ -1186,4 +1400,6 @@ if __name__ == "__main__":
         eval_test=args.eval_test,
         skip_staged_eval=args.skip_staged_eval,
         edit_select_parent=args.edit_select_parent,
+        eval_initial_as_gen0=args.eval_initial_as_gen0,
+        meta_agent_timeout_seconds=args.meta_agent_timeout_seconds,
     )

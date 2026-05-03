@@ -106,9 +106,9 @@ def build_image(
     try:
         # Copy a local folder to build_dir so Docker can see it
         if repo:
-            local_folder = Path(repo)  # your source folder
+            local_folder = Path(repo)
             if local_folder.is_dir():
-                target_folder = build_dir / repo
+                target_folder = build_dir / "repo_source"
                 shutil.copytree(local_folder, target_folder, dirs_exist_ok=True)
                 logger.info(f"Copied folder {local_folder} to {target_folder}")
 

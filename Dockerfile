@@ -74,71 +74,21 @@ RUN wget https://bootstrap.pypa.io/get-pip.py && \
 
 
 
-# --- Robust runtime fix for libcuda.so (covers /usr/lib64 and RO mounts) ---
-RUN cat > /usr/local/bin/fix-cuda.sh <<'BASH' && chmod +x /usr/local/bin/fix-cuda.sh
-#!/usr/bin/env bash
-set -euo pipefail
-
-candidates=(
-  /usr/local/nvidia/lib64
-  /usr/lib/x86_64-linux-gnu
-  /lib/x86_64-linux-gnu
-  /usr/lib64
-  /usr/lib/wsl/lib
-)
-
-found_lib=""
-for d in "${candidates[@]}"; do
-  if [ -e "$d/libcuda.so.1" ]; then
-    found_lib="$d/libcuda.so.1"
-    break
-  fi
-done
-
-# As a last resort, ask the loader cache
-if [ -z "$found_lib" ]; then
-  if path=$(ldconfig -p | awk '/libcuda\.so\.1/{print $NF; exit}'); then
-    found_lib="$path"
-  fi
-fi
-
-if [ -n "$found_lib" ]; then
-  target_dir="$(dirname "$found_lib")"
-  # If we can write next to libcuda.so.1, create the symlink there; else use /usr/local/lib
-  if [ -w "$target_dir" ]; then
-    [ -e "$target_dir/libcuda.so" ] || ln -s "$found_lib" "$target_dir/libcuda.so"
-    echo "$target_dir" > /etc/ld.so.conf.d/nvidia.conf
-  else
-    mkdir -p /usr/local/lib
-    [ -e /usr/local/lib/libcuda.so ] || ln -s "$found_lib" /usr/local/lib/libcuda.so
-    echo "/usr/local/lib" > /etc/ld.so.conf.d/nvidia.conf
-  fi
-  ldconfig || true
-fi
-
-# diagnostics (non-fatal)
-ldconfig -p | grep -E 'libcuda\.so(\.1)?' || true
-for d in "${candidates[@]}" /usr/local/lib; do
-  [ -d "$d" ] && ls -l "$d"/libcuda.so* 2>/dev/null || true
-done
-
-exec "$@"
-BASH
-# --- End of libcuda.so fix ---
-
-
-
 # Set the working directory inside the container
 WORKDIR /hyperagents
 
 # Copy the entire repository into the container
 COPY . .
 
+# Robust runtime fix for libcuda.so (covers /usr/lib64 and RO mounts).
+COPY docker/fix-cuda.sh /usr/local/bin/fix-cuda.sh
+RUN chmod +x /usr/local/bin/fix-cuda.sh
+
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install proofgrader for imo_proof domain
-RUN pip install -e proofgrader_repo
+# Install proofgrader for imo_proof domain when that optional checkout is present.
+RUN if [ -d proofgrader_repo ]; then pip install -e proofgrader_repo; fi
 
 # Download things for balrog domains
 RUN python -m domains.balrog.scripts.post_install

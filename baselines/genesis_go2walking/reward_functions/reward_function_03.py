@@ -68,7 +68,7 @@ def compute_reward(
         "joint_vel_penalty": joint_vel_scale * joint_vel_penalty,
         "vertical_vel_penalty": vertical_vel_scale * vertical_vel_penalty,
     }
-    
+
     reward_scales = {
         "lin_vel_x_reward": lin_vel_x_scale,
         "ang_vel_z_reward": ang_vel_z_scale,

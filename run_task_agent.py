@@ -1,30 +1,74 @@
 import argparse
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
+
+from agent.llm import polyglot_model_from_env, task_model_from_env
 from task_agent import TaskAgent
 from utils.git_utils import diff_versus_commit
 
 
+def _load_shared_env() -> None:
+    run_task_path = Path(__file__).resolve()
+    parent_candidates = list(run_task_path.parents)
+    candidate_roots = [
+        *(parent_candidates[idx] for idx in (0, 1, 2) if idx < len(parent_candidates)),
+        Path.cwd(),
+    ]
+    loaded = set()
+    for repo_root in candidate_roots:
+        for env_path in [
+            repo_root / "configs" / "providers" / ".env.shared",
+            repo_root / "configs" / "providers" / ".env.haiku",
+            repo_root / "configs" / "providers" / ".env.openai",
+            repo_root / "configs" / "models" / "shared.env",
+        ]:
+            if env_path in loaded:
+                continue
+            loaded.add(env_path)
+            if env_path.exists():
+                load_dotenv(env_path, override=False)
+
+
+def _default_model_for_domain(domain):
+    if domain == "polyglot":
+        return polyglot_model_from_env()
+    return task_model_from_env()
+
+
 def main():
-    parser = argparse.ArgumentParser(description='Run task agent on POLYGLOT benchmark.')
+    _load_shared_env()
+    parser = argparse.ArgumentParser(description='Run task agent on a coding benchmark task.')
+    parser.add_argument('--domain', default='polyglot', help='Benchmark domain name')
     parser.add_argument('--problem_statement', required=True, help='The problem statement to process')
+    parser.add_argument('--requirements', default=None, help='Task requirements text')
+    parser.add_argument('--interface', default=None, help='New interfaces introduced text')
     parser.add_argument('--git_dir', required=True, help='Path to git repository directory')
     parser.add_argument('--base_commit', required=True, help='Base commit hash to compare against')
     parser.add_argument('--chat_history_file', required=True, help='Path to chat history file')
     parser.add_argument('--outdir', required=False, default="/dgm/", help='Output directory')
     parser.add_argument('--test_description', default=None, required=False, help='Description of how to test the repository')
     parser.add_argument('--language', default=None, required=False, help='Coding language of the repository')
-    parser.add_argument('--model', required=False, default="o3-mini", help='LLM model to use')
+    parser.add_argument(
+        '--model',
+        required=False,
+        default=None,
+        help='LLM model to use',
+    )
     args = parser.parse_args()
+    model = args.model or _default_model_for_domain(args.domain)
 
     # Process the repository
     agentic_system = TaskAgent(
-        model=args.model,
+        model=model,
         chat_history_file=args.chat_history_file,
     )
     inputs = {
-        "domain": "polyglot",
+        "domain": args.domain,
         "problem_statement": args.problem_statement,
+        "requirements": args.requirements,
+        "interface": args.interface,
         "git_tempdir": args.git_dir,
         "base_commit": args.base_commit,
         "test_description": args.test_description,

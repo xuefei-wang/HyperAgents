@@ -1,0 +1,31 @@
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    git \
+    patch \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git config --system --add safe.directory /hyperagents
+
+RUN python -m pip install --no-cache-dir \
+    requests==2.32.4 \
+    python-dotenv==1.1.1 \
+    tqdm==4.67.1 \
+    backoff==2.2.1 \
+    docker==7.1.0 \
+    datasets==3.6.0 \
+    GitPython==3.1.44 \
+    litellm==1.83.11 \
+    pandas==2.3.2 \
+    numpy==2.4.4 \
+    matplotlib==3.10.3 \
+    networkx==3.5
+
+WORKDIR /hyperagents
+
+CMD ["tail", "-f", "/dev/null"]
