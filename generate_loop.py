@@ -513,6 +513,7 @@ def copy_prev_eval_to_container(
     container_folder_name=None,
 ):
     """Copy the entire prev_eval_path into the container, then remove unwanted files/dirs in the container"""
+    print(f"[CPE] start: prev_eval_path={prev_eval_path} current_genid={current_genid}", flush=True)
     if not os.path.exists(prev_eval_path):
         raise FileNotFoundError(f"Previous eval path not found: {prev_eval_path}")
 
@@ -520,14 +521,25 @@ def copy_prev_eval_to_container(
     prev_eval_path = os.path.normpath(prev_eval_path)
     tail = os.path.join(*prev_eval_path.split(os.sep)[-1:])
     container_prev_eval_path = os.path.join(container_output_folder, tail)
+    print(f"[CPE] container_prev_eval_path={container_prev_eval_path}", flush=True)
 
     # Ensure destination parent exists
     container.exec_run(["mkdir", "-p", container_output_folder], workdir="/")
+    print(f"[CPE] mkdir done; about to copy_to_container", flush=True)
+
+    # size of source tree (for diagnostics)
+    try:
+        import subprocess as _sp
+        src_size = _sp.run(["du", "-sh", prev_eval_path], capture_output=True, text=True, timeout=10).stdout.strip()
+        print(f"[CPE] source tree size: {src_size}", flush=True)
+    except Exception as _e:
+        print(f"[CPE] du failed: {_e}", flush=True)
 
     # Copy the whole tree into the container in one go
     copy_to_container(
         container, source_path=prev_eval_path, dest_path=container_prev_eval_path
     )
+    print(f"[CPE] copy_to_container DONE", flush=True)
 
     # Now prune inside the container
     prune_cmds = [
@@ -617,6 +629,7 @@ def generate(
     # Create and start the Docker container
     image_name = f"{REPO_NAME}"
     container_name = f"{REPO_NAME}-gl-container-{run_id}"
+    print(f"[GEN] gen_{current_genid}: building container", flush=True)
     container = build_container(
         docker_client,
         root_dir,
@@ -624,7 +637,9 @@ def generate(
         container_name,
         domains=domains,
     )
+    print(f"[GEN] gen_{current_genid}: container built; starting", flush=True)
     container.start()
+    print(f"[GEN] gen_{current_genid}: container started", flush=True)
     container_output_folder = "/tmp/"
 
     try:
@@ -646,11 +661,15 @@ def generate(
             metadata["prev_patch_files"] += meta_patch_files
 
         # Apply all lineage diffs
+        print(f"[GEN] gen_{current_genid}: get_patch_files for parent={parent_genid}", flush=True)
         patch_files = get_patch_files(output_dir, parent_genid)
+        print(f"[GEN] gen_{current_genid}: patch_files count={len(patch_files)}; applying lineage", flush=True)
         metadata["prev_patch_files"] += patch_files
         commit_hash = apply_diffs_container(container, patch_files)
+        print(f"[GEN] gen_{current_genid}: lineage applied; commit={commit_hash}", flush=True)
 
         if run_meta_agent:
+            print(f"[GEN] gen_{current_genid}: ENTERING run_meta_agent block", flush=True)
             if run_baseline and "dgm" in run_baseline:
                 # Get problem statement (DGM specific)
                 from baselines.dgm.utils import get_problem_statement
@@ -681,11 +700,14 @@ def generate(
                         dest_path=container_prev_eval_path,
                     )
                 else:
+                    print(f"[GEN] gen_{current_genid}: about to copy_prev_eval_to_container (output_dir={output_dir})", flush=True)
                     container_prev_eval_path = copy_prev_eval_to_container(
                         container, output_dir, container_output_folder, current_genid=current_genid,
                     )
+                    print(f"[GEN] gen_{current_genid}: copy_prev_eval_to_container returned -> {container_prev_eval_path}", flush=True)
 
             # Run meta agent
+            print(f"[GEN] gen_{current_genid}: about to run meta-agent", flush=True)
             safe_log("Running meta agent...")
             container_agentoutput_folder = os.path.join(
                 container_output_folder, "agent_output"
@@ -852,6 +874,7 @@ def generate(
 
         # Cleanup container
         cleanup_container(container)
+        print(f"[GEN] cleanup_container done for gen_{current_genid}", flush=True)
 
         # Save metadata
         eval_successful = all(
@@ -863,6 +886,7 @@ def generate(
         metadata["valid_parent"] = metadata["run_eval"] and (eval_successful or meta_patch_files is not None)
         with open(os.path.join(gen_output_dir, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
+        print(f"[GEN] metadata saved for gen_{current_genid}; about to return", flush=True)
 
     return metadata
 
@@ -1091,6 +1115,7 @@ def generate_loop(
             root_dir, root_commit,
         )
     for current_genid in range(start_genid, max_generation + 1):
+        print(f"[ITER] >>> starting gen_{current_genid}, parent={parent_genid}", flush=True)
         metadata = generate(
             docker_client,
             [d for d in domains if d not in SPECIAL_WORKSPACE_DOMAINS],
@@ -1114,19 +1139,24 @@ def generate_loop(
             max_generation=max_generation,
             meta_agent_timeout_seconds=meta_agent_timeout_seconds,
         )
+        print(f"[ITER] <<< generate() returned for gen_{current_genid}, run_eval={metadata.get('run_eval')} parent_success={metadata.get('parent_agent_success')}", flush=True)
 
         # NOTE: need to update and save archive before running ensembling eval
         archive = update_and_save_archive(output_dir, archive, new_node=current_genid)
+        print(f"[ITER] <<< archive saved for gen_{current_genid}", flush=True)
 
         # Parent agent failed, update the metadata in the parent node
         if not metadata["parent_agent_success"]:
             update_node_metadata(output_dir, parent_genid, {"valid_parent": False})
+            print(f"[ITER] parent_genid={parent_genid} marked invalid", flush=True)
 
         # Evaluate the agent on polyglot if needed
         if metadata["run_eval"] and "polyglot" in domains:
             run_harness_polyglot(root_dir, output_dir, current_genid, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
         if metadata["run_eval"] and "swebench_pro" in domains:
+            print(f"[ITER] >>> run_harness_swebench_pro start for gen_{current_genid}", flush=True)
             run_harness_swebench_pro(root_dir, output_dir, current_genid, num_samples=eval_samples[domains.index("swebench_pro")])
+            print(f"[ITER] <<< run_harness_swebench_pro done for gen_{current_genid}", flush=True)
         for arc_domain in ("arc1", "arc2"):
             if metadata["run_eval"] and arc_domain in domains:
                 run_harness_arc(root_dir, output_dir, current_genid, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
