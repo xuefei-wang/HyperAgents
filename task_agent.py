@@ -117,14 +117,21 @@ Respond in JSON format with the following schema:
                 - new_msg_history (list): A list of messages representing the message history of the interaction.
         """
         instruction = self._build_instruction(inputs)
-        domain = inputs.get('domain')
-        tools_available = ['bash', 'editor'] if domain in {'swebench_pro', 'arc_ui'} else 'all'
+        # Upstream-faithful: upstream `facebookresearch/HyperAgents/task_agent.py`
+        # calls `chat_with_agent` without a `tools_available` kwarg, which
+        # defaults to `[]` for every domain (see `agent/llm_withtools.py`,
+        # `tools_available=[], # Empty list means no tools, 'all' means all tools`).
+        # The prior swarms-integration deviation injected `['bash','editor']`
+        # for swebench_pro/arc_ui and `'all'` for other domains, biasing the
+        # task agent's gen_0 toolset upward relative to upstream HA. HA's
+        # self-improvement loop expects the meta-agent to provide tools across
+        # generations; pre-loading them at the task agent contradicts that
+        # design. Re-aligning with upstream here.
         new_msg_history = chat_with_agent(
             instruction,
             model=self.model,
             msg_history=[],
             logging=self.log,
-            tools_available=tools_available,
         )
 
         # Extract the response
