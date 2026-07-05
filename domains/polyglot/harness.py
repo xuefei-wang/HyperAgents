@@ -20,6 +20,7 @@ from domains.polyglot.docker_build import build_env_images, build_container, cle
 from domains.polyglot.constants import (
     MAP_REPO_VERSION_TO_SPECS,
     TEST_COMMANDS,
+    POLYGLOT_AGENT_TIMEOUT_SECONDS,
     POLYGLOT_METADATA_PATH,
     POLYGLOT_SOURCE_DIR,
     POLYGLOT_TASK_MAP_DIR,
@@ -172,7 +173,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         safe_log("Running the agent")
         agent_model = polyglot_model_from_env()
         cmd = [
-            "timeout", "600",  # 10 min timeout
+            "timeout", str(POLYGLOT_AGENT_TIMEOUT_SECONDS),  # default 10 min; CROSS_RUNNER_AGENT_TIMEOUT_SEC overrides
             "python", f"/{REPO_NAME}/run_task_agent.py",
             "--problem_statement", problem_statement,
             "--git_dir", "/testbed/",
