@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[4]
@@ -119,3 +120,25 @@ MAP_REPO_VERSION_TO_SPECS = {
 MAP_REPO_TO_INSTALL = {}
 
 USE_X86 = {}
+
+
+def _resolve_polyglot_timeout(default: int = 600) -> int:
+    """Read CROSS_RUNNER_AGENT_TIMEOUT_SEC first (cross-runner sweep override),
+    then POLYGLOT_AGENT_TIMEOUT_SECONDS_ENV (HA-specific override), falling back
+    to ``default`` (the legacy 600s / 10-min budget). Returns a positive int
+    seconds value. Mirrors domains.swebench_pro.constants._resolve_swebench_pro_timeout
+    so the polyglot harness honors the same sweep-level timeout (kcsi #1125)."""
+    for var in ("CROSS_RUNNER_AGENT_TIMEOUT_SEC", "POLYGLOT_AGENT_TIMEOUT_SECONDS_ENV"):
+        raw = os.environ.get(var, "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value > 0:
+            return value
+    return default
+
+
+POLYGLOT_AGENT_TIMEOUT_SECONDS = _resolve_polyglot_timeout()

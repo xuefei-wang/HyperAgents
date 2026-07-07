@@ -75,4 +75,23 @@ ARC_TASK_DIRS = {
     "arc2": ARC2_TASK_DIR,
 }
 
-ARC_AGENT_TIMEOUT_SECONDS = 600
+def _resolve_arc_agent_timeout(default: int = 600) -> int:
+    """Read CROSS_RUNNER_AGENT_TIMEOUT_SEC first (cross-runner sweep override),
+    then ARC_AGENT_TIMEOUT_SECONDS_ENV (HA-specific override), falling back to
+    ``default`` (the legacy 600s / 10-min budget). Returns a positive int
+    seconds value. Mirrors domains.swebench_pro.constants._resolve_swebench_pro_timeout
+    so the ARC harness honors the same sweep-level timeout (kcsi #1196 / #1125)."""
+    for var in ("CROSS_RUNNER_AGENT_TIMEOUT_SEC", "ARC_AGENT_TIMEOUT_SECONDS_ENV"):
+        raw = os.environ.get(var, "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value > 0:
+            return value
+    return default
+
+
+ARC_AGENT_TIMEOUT_SECONDS = _resolve_arc_agent_timeout()

@@ -20,6 +20,7 @@ from domains.polyglot.docker_build import build_env_images, build_container, cle
 from domains.polyglot.constants import (
     MAP_REPO_VERSION_TO_SPECS,
     TEST_COMMANDS,
+    POLYGLOT_AGENT_TIMEOUT_SECONDS,
     POLYGLOT_METADATA_PATH,
     POLYGLOT_SOURCE_DIR,
     POLYGLOT_TASK_MAP_DIR,
@@ -172,7 +173,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         safe_log("Running the agent")
         agent_model = polyglot_model_from_env()
         cmd = [
-            "timeout", "600",  # 10 min timeout
+            "timeout", str(POLYGLOT_AGENT_TIMEOUT_SECONDS),  # default 10 min; CROSS_RUNNER_AGENT_TIMEOUT_SEC overrides
             "python", f"/{REPO_NAME}/run_task_agent.py",
             "--problem_statement", problem_statement,
             "--git_dir", "/testbed/",
@@ -243,7 +244,10 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         exec_result = container.exec_run("chmod +x /testbed/eval.sh", workdir='/')
         log_container_output(exec_result)
 
-        exec_result = container.exec_run("timeout 120 ./eval.sh", workdir='/testbed')
+        # Unify the polyglot eval (test-execution) timeout at 180s to match the
+        # KCSI polyglot harness (--polyglot-timeout-sec 180); compiled-language
+        # test suites need more than the legacy 120s budget (kcsi #1196).
+        exec_result = container.exec_run("timeout 180 ./eval.sh", workdir='/testbed')
         log_container_output(exec_result, raise_error=False)
         eval_result_file.write_text(exec_result.output.decode())
         if exec_result.exit_code == 0:
