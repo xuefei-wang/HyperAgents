@@ -224,3 +224,18 @@ def test_build_container_open_keeps_host_networking():
     kw = client.containers.run_kwargs
     assert kw.get("network_mode") == "host"
     assert "network" not in kw
+
+
+def test_isolated_run_kwargs_open_mode_is_passthrough():
+    base = {"image": "hyperagents", "network_mode": "host", "detach": True}
+    assert egress.isolated_run_kwargs(base, None) == base
+
+
+def test_isolated_run_kwargs_isolated_drops_host_net_and_attaches_proxy():
+    infra = egress.EgressInfra("ha-egress-int-x", "ha-egress-ext-x", "ha-egress-proxy-x", 8080)
+    out = egress.isolated_run_kwargs({"image": "hyperagents", "network_mode": "host"}, infra)
+    assert "network_mode" not in out  # host networking dropped (leak surface closed)
+    assert out["network"] == "ha-egress-int-x"  # attached to no-route internal net
+    assert out["environment"]["HTTPS_PROXY"] == "http://ha-egress-proxy-x:8080"
+    assert out["dns"] == ["0.0.0.0"]  # external DNS blackholed
+    assert out["image"] == "hyperagents"  # base kwargs preserved

@@ -16,6 +16,7 @@ from agent.llm import task_model_from_env
 from utils.constants import REPO_NAME
 from utils.common import load_json_file
 from utils.docker_utils import copy_from_container, copy_to_container, setup_logger
+from utils.egress import ensure_egress_infra, isolated_run_kwargs, teardown_egress_infra
 
 from domains.arc.constants import (
     ARC_AGENT_TIMEOUT_SECONDS,
@@ -81,8 +82,8 @@ def _ensure_image(client, root_dir: str, image_name: str, logger) -> None:
             logger.info(log_entry["stream"].strip())
 
 
-def _start_container(client, image_name: str, container_name: str):
-    return client.containers.run(
+def _start_container(client, image_name: str, container_name: str, infra=None):
+    base_kwargs = dict(
         image=image_name,
         name=container_name,
         detach=True,
@@ -91,6 +92,7 @@ def _start_container(client, image_name: str, container_name: str):
         network_mode="host",
         command="tail -f /dev/null",
     )
+    return client.containers.run(**isolated_run_kwargs(base_kwargs, infra))
 
 
 def _copy_agent_code(container, root_dir: str) -> None:
@@ -456,6 +458,7 @@ def process_entry(entry, out_dname: Path, model_name_or_path: str, model_patch_p
             return json.load(handle)
 
     container = None
+    egress_infra = None
     agent_status = "error"
     patch_text = ""
     started_at = datetime.datetime.now(datetime.timezone.utc)
@@ -469,7 +472,11 @@ def process_entry(entry, out_dname: Path, model_name_or_path: str, model_patch_p
         run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         container_name = f"{REPO_NAME}-arc-{instance_id[:48]}-{run_id}"
         logger.info("Starting ARC task container %s", container_name)
-        container = _start_container(client, REPO_NAME, container_name)
+        # Matched-info-regime: isolate the solver container egress so a
+        # bash-capable agent cannot re-fetch the public ARC gold answers
+        # (raw.githubusercontent.com/fchollet/ARC/...). None in open mode.
+        egress_infra = ensure_egress_infra(client, REPO_NAME, run_id, os.environ)
+        container = _start_container(client, REPO_NAME, container_name, egress_infra)
 
         logger.info("Copying agent code into task container")
         _copy_agent_code(container, root_dir)
@@ -597,6 +604,8 @@ def process_entry(entry, out_dname: Path, model_name_or_path: str, model_patch_p
                 container.remove(force=True)
             except Exception:
                 pass
+        if egress_infra is not None:
+            teardown_egress_infra(client, egress_infra)
 
 
 def _resolve_manifest_payload_file(path_value: str, manifest_dir: Path) -> Path:
