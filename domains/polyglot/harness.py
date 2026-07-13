@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from agent.llm import polyglot_model_from_env
 from utils.constants import REPO_NAME
+from utils.egress import ensure_egress_infra, teardown_egress_infra
 from utils.common import load_json_file
 from domains.polyglot.testrepo_prompt import get_test_description
 from domains.polyglot.test_spec import make_test_spec
@@ -139,6 +140,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             result = json.loads(f.read())
         return result
 
+    egress_infra = None
     try:
         _load_shared_env()
         # Create and start the Docker container
@@ -151,8 +153,12 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         # Remove any existing container with the same name
         container_name = test_spec.get_instance_container_name(run_id)
         remove_existing_container(client, container_name)
+        # Matched-info-regime: isolate solver-container egress. Proxy runs
+        # from the python-capable REPO_NAME image; the polyglot task image
+        # need not have python. None in open mode.
+        egress_infra = ensure_egress_infra(client, REPO_NAME, run_id, os.environ)
         # Now create and start the container
-        container = build_container(test_spec, client, run_id, logger, nocache, force_rebuild=False)
+        container = build_container(test_spec, client, run_id, logger, nocache, force_rebuild=False, infra=egress_infra)
         container.start()
 
         # Copy the necessary files and requirements to the container
@@ -180,21 +186,15 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         # base_commit + delete /repo_source (fail-closed), and re-inject the
         # bundle at grade time. See domains/polyglot/history_scrub.py.
         #
-        # SCOPE (KNOWN RESIDUAL, accepted): this closes the *local* recovery
-        # vector only. This task-agent container is created on Docker's default
-        # bridge (domains/polyglot/docker_build.py:build_container -> no
-        # `network` kwarg), so it retains an internet route. A task agent that
-        # has been given a network-capable tool could therefore still re-fetch
-        # the *public* hidden tests / .meta reference solutions over the
-        # network (`git clone https://github.com/exercism/<track>`), which this
-        # scrub does not prevent. Two things bound the exposure today:
-        #   * the base task agent runs with `tools_available=[]` (task_agent.py),
-        #     so it has no bash/network tool unless the meta-agent evolves one;
-        #   * the network egress isolation added for the *meta-agent* container
-        #     (utils/egress.py, wired in generate_loop.py) is NOT applied here.
-        # Closing this fully would mean wiring the same allowlisting egress
-        # proxy into build_container above; that is intentionally left as a
-        # follow-up. Do not read this scrub as a network-tight guarantee.
+        # NETWORK RE-FETCH VECTOR: now CLOSED. Previously this task-agent
+        # container ran on Docker's default bridge (internet route), so a
+        # bash-capable agent could re-fetch the *public* hidden tests / .meta
+        # reference solutions (`git clone https://github.com/exercism/<track>`).
+        # The solver container is now attached to the same allowlisting egress
+        # proxy as the meta-agent (ensure_egress_infra below + isolated_run_kwargs
+        # in build_container): only the provider API + PyPI are reachable, so
+        # github.com / exercism are blocked. This local scrub and the network
+        # isolation together close both the offline and online recovery vectors.
         test_commit = entry['test_commit']
         host_bundle_dir = tempfile.mkdtemp(prefix=f"polyglot_bundle_{instance_id}_")
         host_bundle_path = os.path.join(host_bundle_dir, "tests.bundle")
@@ -403,6 +403,8 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             cleanup_container(client, container, logger)
         except Exception as e:
             print(f"Error cleaning up Docker container for {instance_id}: {e}")
+        if egress_infra is not None:
+            teardown_egress_infra(client, egress_infra)
         # Remove the host-held test bundle: it carries the hidden tests, so it
         # must never persist on the host (or land in the copied eval tree).
         try:
