@@ -179,6 +179,22 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         # below), so we bundle it OUT to the host, scrub /testbed down to
         # base_commit + delete /repo_source (fail-closed), and re-inject the
         # bundle at grade time. See domains/polyglot/history_scrub.py.
+        #
+        # SCOPE (KNOWN RESIDUAL, accepted): this closes the *local* recovery
+        # vector only. This task-agent container is created on Docker's default
+        # bridge (domains/polyglot/docker_build.py:build_container -> no
+        # `network` kwarg), so it retains an internet route. A task agent that
+        # has been given a network-capable tool could therefore still re-fetch
+        # the *public* hidden tests / .meta reference solutions over the
+        # network (`git clone https://github.com/exercism/<track>`), which this
+        # scrub does not prevent. Two things bound the exposure today:
+        #   * the base task agent runs with `tools_available=[]` (task_agent.py),
+        #     so it has no bash/network tool unless the meta-agent evolves one;
+        #   * the network egress isolation added for the *meta-agent* container
+        #     (utils/egress.py, wired in generate_loop.py) is NOT applied here.
+        # Closing this fully would mean wiring the same allowlisting egress
+        # proxy into build_container above; that is intentionally left as a
+        # follow-up. Do not read this scrub as a network-tight guarantee.
         test_commit = entry['test_commit']
         host_bundle_dir = tempfile.mkdtemp(prefix=f"polyglot_bundle_{instance_id}_")
         host_bundle_path = os.path.join(host_bundle_dir, "tests.bundle")

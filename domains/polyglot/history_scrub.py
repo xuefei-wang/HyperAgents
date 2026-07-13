@@ -14,6 +14,17 @@ then ``git reset --hard``'s it to ``base_commit`` (domains/polyglot/test_spec.py
     after the reset to ``base_commit``.
   * ``/repo_source`` itself stays in the container with every file on disk.
 
+SCOPE (KNOWN RESIDUAL, accepted): this module closes the *local* recovery
+vectors above only. The task-agent container keeps an internet route
+(domains/polyglot/docker_build.py:build_container attaches no ``network``), so
+a task agent given a network-capable tool could still re-fetch the *public*
+hidden tests / ``.meta`` reference solutions over the network
+(``git clone https://github.com/exercism/<track>``). That vector is out of
+scope here -- it would be closed by wiring the meta-agent's allowlisting egress
+proxy (utils/egress.py) into ``build_container``, left as a follow-up. Today it
+is bounded only by the base task agent running with ``tools_available=[]``
+(task_agent.py). Do not read this scrub as a network-tight guarantee.
+
 The task agent runs as root with an unrestricted bash tool and
 ``--git_dir /testbed`` (harness.py), so it can recover the graded answer
 offline, defeating the matched-information regime::
