@@ -1,8 +1,8 @@
 requests==2.32.4
 # Fixed: the `dotenv` PyPI package is a wrong/abandoned stub. The intended
-# package is `python-dotenv`. Pinned to match the rest of this file (and the
-# main repo's installed version); see issue #863.
-python-dotenv==1.2.2
+# package is `python-dotenv`. Pinned to 1.0.1 because litellm==1.83.11 (below)
+# hard-requires python-dotenv==1.0.1; a 1.2.2 pin is unsatisfiable. See issue #863.
+python-dotenv==1.0.1
 tqdm==4.67.1
 backoff==2.2.1
 matplotlib==3.10.3
