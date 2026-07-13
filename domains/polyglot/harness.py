@@ -2,6 +2,7 @@ import argparse
 import datetime
 import json
 import os
+import shutil
 import tempfile
 from enum import Enum
 import re
@@ -25,6 +26,7 @@ from domains.polyglot.constants import (
     POLYGLOT_SOURCE_DIR,
     POLYGLOT_TASK_MAP_DIR,
 )
+from domains.polyglot import history_scrub
 from domains.polyglot.git_utils import filter_patch_by_files, remove_patch_by_files
 from domains.polyglot.utils import (
     copy_to_container,
@@ -166,6 +168,37 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
         copy_to_container(container, os.path.join(root_dir, 'README.md'), f'/{REPO_NAME}/README.md')
         chat_history_file_container = f'/{REPO_NAME}/{chat_history_file.name}'
 
+        # --- Matched-info-regime leak fix (LEAK 2) ---------------------------
+        # The instance image ships /testbed as a `git clone` of /repo_source
+        # (HEAD=test_commit: hidden tests + .meta reference solutions) reset to
+        # base_commit. A LOCAL clone hardlinks the whole object store, so
+        # /testbed keeps the test_commit object + origin refs, and /repo_source
+        # keeps every file on disk -- both readable by the agent (root bash,
+        # git_dir=/testbed), which would defeat the base_commit-only regime.
+        # Grading still needs test_commit (`git reset --hard <test_commit>`
+        # below), so we bundle it OUT to the host, scrub /testbed down to
+        # base_commit + delete /repo_source (fail-closed), and re-inject the
+        # bundle at grade time. See domains/polyglot/history_scrub.py.
+        test_commit = entry['test_commit']
+        host_bundle_dir = tempfile.mkdtemp(prefix=f"polyglot_bundle_{instance_id}_")
+        host_bundle_path = os.path.join(host_bundle_dir, "tests.bundle")
+        for cmd in history_scrub.bundle_create_commands(test_commit):
+            log_container_output(container.exec_run(["bash", "-lc", cmd], workdir='/'), raise_error=True)
+        copy_from_container(container, history_scrub.CONTAINER_BUNDLE, host_bundle_path)
+        container.exec_run(["bash", "-lc", f"rm -f {history_scrub.CONTAINER_BUNDLE}"], workdir='/')
+        for cmd in history_scrub.scrub_commands(base_commit):
+            log_container_output(container.exec_run(["bash", "-lc", cmd], workdir='/'), raise_error=True)
+        # Authoritative fail-closed leak guard: raises (-> task scored error,
+        # never a leak) if test_commit or /repo_source is still recoverable.
+        log_container_output(
+            container.exec_run(
+                ["bash", "-lc", history_scrub.verify_scrub_command(test_commit, base_commit)],
+                workdir='/',
+            ),
+            raise_error=True,
+        )
+        safe_log("Matched-info-regime: /testbed scrubbed to base_commit; /repo_source removed")
+
         # See the checked repo
         exec_result = container.exec_run("ls -R /testbed", workdir='/')
         log_container_output(exec_result)
@@ -263,6 +296,13 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             return {"success": True, "instance_id": instance_id, "eval_result": eval_result}
 
 
+        # Re-inject the hidden tests from the host-held bundle (the agent never
+        # had access to it during its run) so grading can reset to test_commit.
+        copy_to_container(container, host_bundle_path, history_scrub.CONTAINER_BUNDLE)
+        for cmd in history_scrub.reinject_commands(test_commit):
+            log_container_output(container.exec_run(["bash", "-lc", cmd], workdir='/'), raise_error=True)
+        container.exec_run(["bash", "-lc", f"rm -f {history_scrub.CONTAINER_BUNDLE}"], workdir='/')
+
         exec_result = container.exec_run("git -C /testbed stash push " + " ".join(entry['files']['solution']), workdir='/')
         log_container_output(exec_result)
         exec_result = container.exec_run(f"git -C /testbed reset --hard {entry['test_commit']}", workdir='/')
@@ -347,6 +387,13 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths, root_
             cleanup_container(client, container, logger)
         except Exception as e:
             print(f"Error cleaning up Docker container for {instance_id}: {e}")
+        # Remove the host-held test bundle: it carries the hidden tests, so it
+        # must never persist on the host (or land in the copied eval tree).
+        try:
+            if 'host_bundle_dir' in locals() and host_bundle_dir and os.path.isdir(host_bundle_dir):
+                shutil.rmtree(host_bundle_dir, ignore_errors=True)
+        except Exception as e:
+            print(f"Error removing host test bundle for {instance_id}: {e}")
 
 def harness(
         dataset_path=str(POLYGLOT_METADATA_PATH),
