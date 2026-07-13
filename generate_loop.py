@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import shlex
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,107 @@ from utils.gl_utils import (
 )
 
 SPECIAL_WORKSPACE_DOMAINS = {"polyglot", "swebench_pro", "arc1", "arc2"}
+
+
+def _truthy_env(name):
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _container_exec_output(exec_result):
+    output = getattr(exec_result, "output", b"")
+    if isinstance(output, bytes):
+        return output.decode(errors="replace")
+    return str(output)
+
+
+def _run_container_prune_command(container, cmd):
+    exec_result = container.exec_run(["bash", "-lc", cmd], workdir="/")
+    if getattr(exec_result, "exit_code", 0) != 0:
+        output = _container_exec_output(exec_result).strip()
+        raise RuntimeError(
+            f"Failed to prune copied eval tree with command {cmd!r}"
+            f" (exit_code={getattr(exec_result, 'exit_code', 'unknown')}): {output}"
+        )
+    return exec_result
+
+
+def _prune_copied_eval_tree(container, container_prev_eval_path, current_genid=None):
+    quoted_path = shlex.quote(container_prev_eval_path)
+    repo_glob = shlex.quote(f"*{REPO_NAME}*")
+    current_gen_glob = shlex.quote(f"gen_{current_genid}")
+    prune_cmds = [
+        # Remove current genid folder
+        f"find {quoted_path} -type d -name {current_gen_glob} -prune -exec rm -rf {{}} +",
+        # 1) Remove val/test eval directories
+        f"find {quoted_path} -type d -name '*_eval_val*' -prune -exec rm -rf {{}} +",
+        f"find {quoted_path} -type d -name '*_eval_test*' -prune -exec rm -rf {{}} +",
+        # 2) Remove any directories containing the repo name (copied worktrees, etc.)
+        f"find {quoted_path} -type d -name {repo_glob} -prune -exec rm -rf {{}} +",
+        # 3) Remove compiled Python files
+        f"find {quoted_path} -type f -name '*.pyc' -delete",
+        # 4) Remove files whose base name indicates val/test (with/without extensions)
+        #    *_val, *_val.*, *_val_*, and same for _test
+        f"find {quoted_path} -type f \\( -name '*_val' -o -name '*_val.*' -o -name '*_val_*' \\) -delete",
+        f"find {quoted_path} -type f \\( -name '*_test' -o -name '*_test.*' -o -name '*_test_*' \\) -delete",
+    ]
+
+    # 5) Graded-artifact leak guard (KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS).
+    #    The polyglot harness writes the RAW grader stdout -- hidden test
+    #    names, assertion diffs, expected/actual output -- to
+    #    <instance_id>_eval.md (domains/polyglot/harness.py: eval_result_file).
+    #    The val/test pruning above does NOT remove these train-split raw-output
+    #    tails, so the meta-agent -- which is handed the bash + editor tools
+    #    (meta_agent.py: tools_available='all') and can cat/view arbitrary
+    #    absolute paths in this copied tree -- could read far more than the
+    #    intended scalar resolved/unresolved score, defeating HA's "scalar-score"
+    #    label. Default: LEAK-CLOSED (delete the raw *_eval.md tails; the scalar
+    #    report JSONs and metadata that carry resolved/unresolved counts are
+    #    kept). Set KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS=1 (or true/yes/on) to
+    #    retain them for faithful reproduction of the un-guarded baseline.
+    leak_train_eval = _truthy_env("KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS")
+    if not leak_train_eval:
+        # Prune grader-side raw output: the hidden-test stdout tails (*_eval.md)
+        # and the eval-container infra logs (*_docker.log). The per-task agent
+        # chat histories are the agent's OWN transcript (in-regime) and the
+        # scalar resolved/unresolved counts live in report/metadata JSON -- both
+        # kept, so the meta-agent still has legitimate evolution signal.
+        raw_artifact_find = (
+            f"find {quoted_path} -type f "
+            r"\( -name '*_eval.md' -o -name '*_docker.log' \)"
+        )
+        prune_cmds.append(f"{raw_artifact_find} -delete")
+
+    for cmd in prune_cmds:
+        _run_container_prune_command(container, cmd)
+
+    if not leak_train_eval:
+        raw_artifact_find = (
+            f"find {quoted_path} -type f "
+            r"\( -name '*_eval.md' -o -name '*_docker.log' \)"
+        )
+        _run_container_prune_command(
+            container,
+            f"remaining=$({raw_artifact_find} -print -quit); "
+            'if [ -n "$remaining" ]; then echo "$remaining"; exit 1; fi',
+        )
+
+
+def copy_no_archive_prev_eval_to_container(
+    container,
+    prev_gen_dir,
+    container_output_folder,
+    current_genid=None,
+):
+    container_prev_eval_path = os.path.join(
+        container_output_folder, *os.path.normpath(prev_gen_dir).split(os.sep)[-2:]
+    )
+    copy_to_container(
+        container,
+        source_path=prev_gen_dir,
+        dest_path=container_prev_eval_path,
+    )
+    _prune_copied_eval_tree(container, container_prev_eval_path, current_genid=current_genid)
+    return container_prev_eval_path
 
 
 def _first_existing_path(*paths):
@@ -541,52 +643,8 @@ def copy_prev_eval_to_container(
     )
     print(f"[CPE] copy_to_container DONE", flush=True)
 
-    # Now prune inside the container
-    prune_cmds = [
-        # Remove current genid folder
-        f"find '{container_prev_eval_path}' -type d -name 'gen_{current_genid}' -prune -exec rm -rf {{}} +",
-        # 1) Remove val/test eval directories
-        f"find '{container_prev_eval_path}' -type d -name '*_eval_val*' -prune -exec rm -rf {{}} +",
-        f"find '{container_prev_eval_path}' -type d -name '*_eval_test*' -prune -exec rm -rf {{}} +",
-        # 2) Remove any directories containing the repo name (copied worktrees, etc.)
-        f"find '{container_prev_eval_path}' -type d -name '*{REPO_NAME}*' -prune -exec rm -rf {{}} +",
-        # 3) Remove compiled Python files
-        f"find '{container_prev_eval_path}' -type f -name '*.pyc' -delete",
-        # 4) Remove files whose base name indicates val/test (with/without extensions)
-        #    *_val, *_val.*, *_val_*, and same for _test
-        f"find '{container_prev_eval_path}' -type f \\( -name '*_val' -o -name '*_val.*' -o -name '*_val_*' \\) -delete",
-        f"find '{container_prev_eval_path}' -type f \\( -name '*_test' -o -name '*_test.*' -o -name '*_test_*' \\) -delete",
-    ]
-
-    # 5) Graded-artifact leak guard (KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS).
-    #    The polyglot harness writes the RAW grader stdout -- hidden test
-    #    names, assertion diffs, expected/actual output -- to
-    #    <instance_id>_eval.md (domains/polyglot/harness.py: eval_result_file).
-    #    The val/test pruning above does NOT remove these train-split raw-output
-    #    tails, so the meta-agent -- which is handed the bash + editor tools
-    #    (meta_agent.py: tools_available='all') and can cat/view arbitrary
-    #    absolute paths in this copied tree -- could read far more than the
-    #    intended scalar resolved/unresolved score, defeating HA's "scalar-score"
-    #    label. Default: LEAK-CLOSED (delete the raw *_eval.md tails; the scalar
-    #    report JSONs and metadata that carry resolved/unresolved counts are
-    #    kept). Set KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS=1 (or true/yes/on) to
-    #    retain them for faithful reproduction of the un-guarded baseline.
-    _leak_train_eval = os.environ.get(
-        "KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS", ""
-    ).strip().lower() in ("1", "true", "yes", "on")
-    if not _leak_train_eval:
-        # Prune grader-side raw output: the hidden-test stdout tails (*_eval.md)
-        # and the eval-container infra logs (*_docker.log). The per-task agent
-        # chat histories are the agent's OWN transcript (in-regime) and the
-        # scalar resolved/unresolved counts live in report/metadata JSON -- both
-        # kept, so the meta-agent still has legitimate evolution signal.
-        prune_cmds.append(
-            f"find '{container_prev_eval_path}' -type f "
-            r"\( -name '*_eval.md' -o -name '*_docker.log' \) -delete"
-        )
-
-    for cmd in prune_cmds:
-        exec_result = container.exec_run(["bash", "-lc", cmd], workdir="/")
+    # Now prune inside the container.
+    _prune_copied_eval_tree(container, container_prev_eval_path, current_genid=current_genid)
 
     # Confirm files remaining were copied
     exec_result = container.exec_run(
@@ -718,13 +776,11 @@ def generate(
 
                 # Copy previous generations to container
                 if run_baseline == "no_archive":
-                    container_prev_eval_path = os.path.join(
-                        container_output_folder, *prev_gen_dir.split(os.sep)[-2:]
-                    )
-                    copy_to_container(
+                    container_prev_eval_path = copy_no_archive_prev_eval_to_container(
                         container,
-                        source_path=prev_gen_dir,
-                        dest_path=container_prev_eval_path,
+                        prev_gen_dir,
+                        container_output_folder,
+                        current_genid=current_genid,
                     )
                 else:
                     print(f"[GEN] gen_{current_genid}: about to copy_prev_eval_to_container (output_dir={output_dir})", flush=True)
