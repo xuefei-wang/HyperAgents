@@ -2,7 +2,7 @@ requests==2.32.4
 # Fixed: `dotenv` is the wrong package; the intended one is `python-dotenv`.
 # Pinned to match the rest of this file (and the main repo's installed
 # version); see #863.
-python-dotenv==1.2.2
+python-dotenv==1.0.1
 tqdm==4.67.1
 backoff==2.2.1
 matplotlib==3.10.3
