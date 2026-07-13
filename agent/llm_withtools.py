@@ -65,24 +65,53 @@ def should_retry_tool_use(response, tool_uses=None):
     # No retry
     return False
 
+# HyperAgents' documented protocol is <json>{tool_name,tool_input}</json>, but
+# Claude 4.5-class models (Haiku 4.5) emit their native <function_calls>/<invoke>
+# tool XML instead -- either a <json> block closed by </function_calls>, or a
+# pure <invoke name=...><parameter name=...>...</invoke> block with no <json> at
+# all. The strict <json>...</json> regex dropped every such call, so no tool ever
+# executed. Accept all three forms.
+_JSON_TOOL_RE = re.compile(r'<json>\s*(\{.*?\})\s*</(?:json|function_calls)>', re.DOTALL)
+_INVOKE_RE = re.compile(r'<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>', re.DOTALL)
+_PARAM_RE = re.compile(r'<parameter\s+name="([^"]+)"\s*>(.*?)</parameter>', re.DOTALL)
+
+
+def _parse_json_tool(blob):
+    try:
+        tool_use = json.loads(blob)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(tool_use, dict) or 'tool_name' not in tool_use or 'tool_input' not in tool_use:
+        return None
+    return tool_use
+
+
+def _parse_invoke_tool(name, body):
+    tool_input = {}
+    for pm in _PARAM_RE.finditer(body):
+        tool_input[pm.group(1)] = pm.group(2).strip()
+    return {'tool_name': name, 'tool_input': tool_input}
+
+
 def check_for_tool_uses(response):
     """
-    Checks if the response contains one or more tool calls in json code blocks.
-    Returns a list of tool use dictionaries.
+    Return the response's tool calls in emission order as a list of
+    ``{"tool_name", "tool_input"}`` dicts, or ``None`` if there are none.
+
+    Accepts the ``<json>{...}</json>`` protocol form, the Haiku hybrid where the
+    ``<json>`` block is closed by ``</function_calls>``, and the pure native
+    ``<invoke name=...><parameter name=...>...</invoke>`` form. Ordering is
+    preserved because the tool loop consumes only the first call by default.
     """
-    pattern = r'<json>\s*(\{.*?\})\s*</json>'
-    matches = re.findall(pattern, response, re.DOTALL)
-    tool_uses = []
-
-    for match in matches:
-        try:
-            tool_use = json.loads(match)
-            if 'tool_name' not in tool_use or 'tool_input' not in tool_use:
-                continue  # Skip invalid tool use
-            tool_uses.append(tool_use)
-        except json.JSONDecodeError:
-            continue  # Skip malformed JSON blocks
-
+    found = []  # (position, tool_use)
+    for m in _JSON_TOOL_RE.finditer(response):
+        tool_use = _parse_json_tool(m.group(1))
+        if tool_use is not None:
+            found.append((m.start(), tool_use))
+    for m in _INVOKE_RE.finditer(response):
+        found.append((m.start(), _parse_invoke_tool(m.group(1), m.group(2))))
+    found.sort(key=lambda pair: pair[0])
+    tool_uses = [tool_use for _, tool_use in found]
     return tool_uses if tool_uses else None
 
 def process_tool_call(tools_dict, tool_name, tool_input):
