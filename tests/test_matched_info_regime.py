@@ -1,5 +1,6 @@
 import sys
 import types
+import json
 
 import pytest
 
@@ -50,6 +51,9 @@ class _FakeContainer:
     def __init__(self, fail_on=None):
         self.fail_on = fail_on
         self.calls = []
+
+    def start(self):
+        self.calls.append((["start"], None))
 
     def exec_run(self, cmd, workdir=None):
         self.calls.append((cmd, workdir))
@@ -106,5 +110,36 @@ def test_pruning_failure_raises_instead_of_leaking_artifacts(monkeypatch):
     monkeypatch.delenv("KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS", raising=False)
     container = _FakeContainer(fail_on="*_eval.md")
 
-    with pytest.raises(RuntimeError, match="Failed to prune copied eval tree"):
+    with pytest.raises(generate_loop.EvalTreePruneError, match="Failed to prune copied eval tree"):
         generate_loop._prune_copied_eval_tree(container, "/container/out/tree", current_genid=1)
+
+
+def test_generate_propagates_prune_failures_instead_of_continuing(monkeypatch, tmp_path):
+    container = _FakeContainer()
+    monkeypatch.setattr(generate_loop, "build_container", lambda *args, **kwargs: container)
+    monkeypatch.setattr(generate_loop, "apply_diffs_container", lambda *args, **kwargs: "commit")
+    monkeypatch.setattr(generate_loop, "get_patch_files", lambda *args, **kwargs: [])
+    monkeypatch.setattr(generate_loop, "is_starting_node", lambda genid: False)
+    monkeypatch.setattr(
+        generate_loop,
+        "copy_prev_eval_to_container",
+        lambda *args, **kwargs: (_ for _ in ()).throw(generate_loop.EvalTreePruneError("prune failed")),
+    )
+    monkeypatch.setattr(generate_loop, "cleanup_container", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generate_loop, "get_score", lambda *args, **kwargs: None)
+
+    with pytest.raises(generate_loop.EvalTreePruneError, match="prune failed"):
+        generate_loop.generate(
+            docker_client=object(),
+            domains=["polyglot"],
+            output_dir=str(tmp_path),
+            run_id="unit",
+            current_genid=1,
+            parent_genid=0,
+            root_dir=str(tmp_path),
+            max_generation=2,
+        )
+
+    metadata = json.loads((tmp_path / "gen_1" / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["run_eval"] is False
+    assert metadata["valid_parent"] is False

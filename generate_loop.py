@@ -20,6 +20,7 @@ try:
         visualize_archive_together,
     )
 except ModuleNotFoundError:
+
     def plot_progress_single(*args, **kwargs):
         return None
 
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
 
     def visualize_archive_together(*args, **kwargs):
         return None
+
 
 from utils.common import file_exist_and_not_empty, load_json_file
 from utils.constants import REPO_NAME
@@ -68,6 +70,10 @@ from utils.gl_utils import (
 SPECIAL_WORKSPACE_DOMAINS = {"polyglot", "swebench_pro", "arc1", "arc2"}
 
 
+class EvalTreePruneError(RuntimeError):
+    """Raised when copied eval artifacts cannot be pruned without leaking."""
+
+
 def _truthy_env(name):
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -83,7 +89,7 @@ def _run_container_prune_command(container, cmd):
     exec_result = container.exec_run(["bash", "-lc", cmd], workdir="/")
     if getattr(exec_result, "exit_code", 0) != 0:
         output = _container_exec_output(exec_result).strip()
-        raise RuntimeError(
+        raise EvalTreePruneError(
             f"Failed to prune copied eval tree with command {cmd!r}"
             f" (exit_code={getattr(exec_result, 'exit_code', 'unknown')}): {output}"
         )
@@ -93,21 +99,24 @@ def _run_container_prune_command(container, cmd):
 def _prune_copied_eval_tree(container, container_prev_eval_path, current_genid=None):
     quoted_path = shlex.quote(container_prev_eval_path)
     repo_glob = shlex.quote(f"*{REPO_NAME}*")
-    current_gen_glob = shlex.quote(f"gen_{current_genid}")
+    dir_patterns = [
+        "'*_eval_val*'",
+        "'*_eval_test*'",
+        repo_glob,
+    ]
+    if current_genid is not None:
+        dir_patterns.insert(0, shlex.quote(f"gen_{current_genid}"))
+    dir_expr = " -o ".join(f"-name {pattern}" for pattern in dir_patterns)
+    file_expr = (
+        "-name '*.pyc' "
+        "-o -name '*_val' -o -name '*_val.*' -o -name '*_val_*' "
+        "-o -name '*_test' -o -name '*_test.*' -o -name '*_test_*'"
+    )
     prune_cmds = [
-        # Remove current genid folder
-        f"find {quoted_path} -type d -name {current_gen_glob} -prune -exec rm -rf {{}} +",
-        # 1) Remove val/test eval directories
-        f"find {quoted_path} -type d -name '*_eval_val*' -prune -exec rm -rf {{}} +",
-        f"find {quoted_path} -type d -name '*_eval_test*' -prune -exec rm -rf {{}} +",
-        # 2) Remove any directories containing the repo name (copied worktrees, etc.)
-        f"find {quoted_path} -type d -name {repo_glob} -prune -exec rm -rf {{}} +",
-        # 3) Remove compiled Python files
-        f"find {quoted_path} -type f -name '*.pyc' -delete",
-        # 4) Remove files whose base name indicates val/test (with/without extensions)
-        #    *_val, *_val.*, *_val_*, and same for _test
-        f"find {quoted_path} -type f \\( -name '*_val' -o -name '*_val.*' -o -name '*_val_*' \\) -delete",
-        f"find {quoted_path} -type f \\( -name '*_test' -o -name '*_test.*' -o -name '*_test_*' \\) -delete",
+        # Remove current-generation, val/test, and copied worktree directories.
+        f"find {quoted_path} -type d \\( {dir_expr} \\) -prune -exec rm -rf {{}} +",
+        # Remove compiled Python files and val/test-named files in one scan.
+        f"find {quoted_path} -type f \\( {file_expr} \\) -delete",
     ]
 
     # 5) Graded-artifact leak guard (KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS).
@@ -157,9 +166,7 @@ def copy_no_archive_prev_eval_to_container(
     container_output_folder,
     current_genid=None,
 ):
-    container_prev_eval_path = os.path.join(
-        container_output_folder, *os.path.normpath(prev_gen_dir).split(os.sep)[-2:]
-    )
+    container_prev_eval_path = os.path.join(container_output_folder, *os.path.normpath(prev_gen_dir).split(os.sep)[-2:])
     copy_to_container(
         container,
         source_path=prev_gen_dir,
@@ -249,7 +256,9 @@ def run_harness_polyglot(root_dir, output_dir, genid, skip_staged_eval=False, nu
             output_dir=eval_output_dir,
             root_dir=root_dir,
         )
-        report_polyglot(output_dir=eval_output_dir, run_keyword=model_name_or_path, expected_num_tasks=len(test_task_list))
+        report_polyglot(
+            output_dir=eval_output_dir, run_keyword=model_name_or_path, expected_num_tasks=len(test_task_list)
+        )
         stagedeval_score = get_score("polyglot", output_dir, genid)
         run_next_eval = stagedeval_score is not None and stagedeval_score >= test_more_threshold
 
@@ -343,6 +352,7 @@ def run_harness_arc(root_dir, output_dir, genid, domain, num_samples=-1, max_wor
     )
     update_node_metadata(output_dir, genid, {"run_full_eval": num_samples <= 0})
 
+
 def select_next_parent_container(
     docker_client,
     domains,
@@ -373,9 +383,7 @@ def select_next_parent_container(
         commit_hash = apply_diffs_container(container, prev_patch_files, verbose=False)
 
         # Copy generate_output_dir to container
-        container_generate_output_dir = os.path.join(
-            container_output_folder, generate_output_dir.split(os.sep)[-1]
-        )
+        container_generate_output_dir = os.path.join(container_output_folder, generate_output_dir.split(os.sep)[-1])
         copy_to_container(
             container,
             source_path=generate_output_dir,
@@ -411,13 +419,9 @@ def select_next_parent_container(
     # Even on errors or KeyboardInterrupt
     finally:
         # Reset to the root commit
-        exec_result = container.exec_run(
-            cmd=["git", "reset", "--hard", root_commit], workdir=f"/{REPO_NAME}"
-        )
+        exec_result = container.exec_run(cmd=["git", "reset", "--hard", root_commit], workdir=f"/{REPO_NAME}")
         log_container_output(exec_result, verbose=False)
-        exec_result = container.exec_run(
-            cmd=["git", "clean", "-fd"], workdir=f"/{REPO_NAME}"
-        )
+        exec_result = container.exec_run(cmd=["git", "clean", "-fd"], workdir=f"/{REPO_NAME}")
         log_container_output(exec_result, verbose=False)
 
         # Cleanup container
@@ -440,6 +444,7 @@ def select_next_parent_container(
             raise Exception("Max attempts reached in select_next_parent_container")
 
     return next_parent_genid
+
 
 def get_ensemble_scores_container(
     docker_client,
@@ -469,9 +474,7 @@ def get_ensemble_scores_container(
         commit_hash = apply_diffs_container(container, prev_patch_files)
 
         # Copy generate_output_dir to container
-        container_generate_output_dir = os.path.join(
-            container_output_folder, generate_output_dir.split(os.sep)[-1]
-        )
+        container_generate_output_dir = os.path.join(container_output_folder, generate_output_dir.split(os.sep)[-1])
         copy_to_container(
             container,
             source_path=generate_output_dir,
@@ -531,13 +534,9 @@ def get_ensemble_scores_container(
     # Even on errors or KeyboardInterrupt
     finally:
         # Reset to the root commit
-        exec_result = container.exec_run(
-            cmd=["git", "reset", "--hard", root_commit], workdir=f"/{REPO_NAME}"
-        )
+        exec_result = container.exec_run(cmd=["git", "reset", "--hard", root_commit], workdir=f"/{REPO_NAME}")
         log_container_output(exec_result)
-        exec_result = container.exec_run(
-            cmd=["git", "clean", "-fd"], workdir=f"/{REPO_NAME}"
-        )
+        exec_result = container.exec_run(cmd=["git", "clean", "-fd"], workdir=f"/{REPO_NAME}")
         log_container_output(exec_result)
 
         # Cleanup container
@@ -632,34 +631,27 @@ def copy_prev_eval_to_container(
     # size of source tree (for diagnostics)
     try:
         import subprocess as _sp
+
         src_size = _sp.run(["du", "-sh", prev_eval_path], capture_output=True, text=True, timeout=10).stdout.strip()
         print(f"[CPE] source tree size: {src_size}", flush=True)
     except Exception as _e:
         print(f"[CPE] du failed: {_e}", flush=True)
 
     # Copy the whole tree into the container in one go
-    copy_to_container(
-        container, source_path=prev_eval_path, dest_path=container_prev_eval_path
-    )
+    copy_to_container(container, source_path=prev_eval_path, dest_path=container_prev_eval_path)
     print(f"[CPE] copy_to_container DONE", flush=True)
 
     # Now prune inside the container.
     _prune_copied_eval_tree(container, container_prev_eval_path, current_genid=current_genid)
 
     # Confirm files remaining were copied
-    exec_result = container.exec_run(
-        ["ls", "-l", container_prev_eval_path], workdir="/"
-    )
+    exec_result = container.exec_run(["ls", "-l", container_prev_eval_path], workdir="/")
     log_container_output(exec_result)
 
     # Move the folder to a new name
     if container_folder_name is not None:
-        new_container_prev_eval_path = os.path.join(
-            container_output_folder, container_folder_name
-        )
-        container.exec_run(
-            ["mv", container_prev_eval_path, new_container_prev_eval_path], workdir="/"
-        )
+        new_container_prev_eval_path = os.path.join(container_output_folder, container_folder_name)
+        container.exec_run(["mv", container_prev_eval_path, new_container_prev_eval_path], workdir="/")
         log_container_output(exec_result)
         container_prev_eval_path = new_container_prev_eval_path
 
@@ -758,8 +750,12 @@ def generate(
             if run_baseline and "dgm" in run_baseline:
                 # Get problem statement (DGM specific)
                 from baselines.dgm.utils import get_problem_statement
+
                 problem_statement = get_problem_statement(
-                    root_dir, output_dir, parent_genid, domains,
+                    root_dir,
+                    output_dir,
+                    parent_genid,
+                    domains,
                     customized="custom" in run_baseline,
                 )
 
@@ -783,21 +779,26 @@ def generate(
                         current_genid=current_genid,
                     )
                 else:
-                    print(f"[GEN] gen_{current_genid}: about to copy_prev_eval_to_container (output_dir={output_dir})", flush=True)
-                    container_prev_eval_path = copy_prev_eval_to_container(
-                        container, output_dir, container_output_folder, current_genid=current_genid,
+                    print(
+                        f"[GEN] gen_{current_genid}: about to copy_prev_eval_to_container (output_dir={output_dir})",
+                        flush=True,
                     )
-                    print(f"[GEN] gen_{current_genid}: copy_prev_eval_to_container returned -> {container_prev_eval_path}", flush=True)
+                    container_prev_eval_path = copy_prev_eval_to_container(
+                        container,
+                        output_dir,
+                        container_output_folder,
+                        current_genid=current_genid,
+                    )
+                    print(
+                        f"[GEN] gen_{current_genid}: copy_prev_eval_to_container returned -> {container_prev_eval_path}",
+                        flush=True,
+                    )
 
             # Run meta agent
             print(f"[GEN] gen_{current_genid}: about to run meta-agent", flush=True)
             safe_log("Running meta agent...")
-            container_agentoutput_folder = os.path.join(
-                container_output_folder, "agent_output"
-            )
-            container_chat_history_file = os.path.join(
-                container_agentoutput_folder, "meta_agent_chat_history.md"
-            )
+            container_agentoutput_folder = os.path.join(container_output_folder, "agent_output")
+            container_chat_history_file = os.path.join(container_agentoutput_folder, "meta_agent_chat_history.md")
             if run_baseline and "dgm" in run_baseline:
                 command = [
                     "timeout",
@@ -836,15 +837,11 @@ def generate(
                     container_agentoutput_folder,
                     "--iterations_left",
                     str(max_generation - current_genid),
-                    *(
-                        ["--model", meta_model] if meta_model else []
-                    ),
+                    *(["--model", meta_model] if meta_model else []),
                 ]
 
             run_workdir = (
-                f"/DONOTTOUCH_{REPO_NAME}"
-                if run_baseline and "no_selfimprove" in run_baseline
-                else f"/{REPO_NAME}"
+                f"/DONOTTOUCH_{REPO_NAME}" if run_baseline and "no_selfimprove" in run_baseline else f"/{REPO_NAME}"
             )
             exec_result = container.exec_run(
                 cmd=command,
@@ -863,15 +860,15 @@ def generate(
             )
 
             # Check if agent produced a diff
-            local_patch_file = os.path.join(
-                local_agentoutput_folder, "model_patch.diff"
-            )
+            local_patch_file = os.path.join(local_agentoutput_folder, "model_patch.diff")
             metadata["curr_patch_files"].append(local_patch_file)
             run_eval = file_exist_and_not_empty(local_patch_file)
             metadata["run_eval"] = run_eval
 
             # Run commands to check if the agents are compilable
-            run_commands_to_check_compilation(container, run_baseline=run_baseline, edit_select_parent=edit_select_parent)
+            run_commands_to_check_compilation(
+                container, run_baseline=run_baseline, edit_select_parent=edit_select_parent
+            )
 
         # Evaluate the produced agent
         if run_eval and "agent" in optimize_option:
@@ -892,9 +889,7 @@ def generate(
 
             # Small sample size evaluation for staged eval
             if not skip_staged_eval:
-                stagedeval_samples = [
-                    get_domain_stagedeval_samples(domain) for domain in domains
-                ]
+                stagedeval_samples = [get_domain_stagedeval_samples(domain) for domain in domains]
                 with ThreadPoolExecutor() as executor:
                     futures = [
                         executor.submit(eval_agent_worker, d, s, n)
@@ -909,12 +904,8 @@ def generate(
                             if not future.done():
                                 future.cancel()
                         raise
-                stagedeval_scores = [
-                    get_score(domain, output_dir, current_genid) for domain in domains
-                ]
-                run_next_eval = all(
-                    [x is not None and x > 0 for x in stagedeval_scores]
-                )
+                stagedeval_scores = [get_score(domain, output_dir, current_genid) for domain in domains]
+                run_next_eval = all([x is not None and x > 0 for x in stagedeval_scores])
             else:
                 run_next_eval = True
 
@@ -924,9 +915,7 @@ def generate(
                 with ThreadPoolExecutor() as executor:
                     futures = [
                         executor.submit(eval_agent_worker, d, s, n)
-                        for d, s, n in zip(
-                            domains, eval_subsets, _per_domain_eval_samples
-                        )
+                        for d, s, n in zip(domains, eval_subsets, _per_domain_eval_samples)
                     ]
                     try:
                         for f in futures:
@@ -939,6 +928,10 @@ def generate(
                         raise
                 metadata["run_full_eval"] = True
 
+    except EvalTreePruneError as e:
+        safe_log(f"Fatal eval-tree pruning error in generate: {e}")
+        metadata["run_eval"] = False
+        raise
     except Exception as e:
         safe_log(f"Error in generate: {e}")
         metadata["run_eval"] = False
@@ -946,13 +939,9 @@ def generate(
     # Even on errors or KeyboardInterrupt
     finally:
         # Reset to the root commit
-        exec_result = container.exec_run(
-            cmd=["git", "reset", "--hard", root_commit], workdir=f"/{REPO_NAME}"
-        )
+        exec_result = container.exec_run(cmd=["git", "reset", "--hard", root_commit], workdir=f"/{REPO_NAME}")
         log_container_output(exec_result)
-        exec_result = container.exec_run(
-            cmd=["git", "clean", "-fd"], workdir=f"/{REPO_NAME}"
-        )
+        exec_result = container.exec_run(cmd=["git", "clean", "-fd"], workdir=f"/{REPO_NAME}")
         log_container_output(exec_result)
 
         # Cleanup container
@@ -960,12 +949,7 @@ def generate(
         print(f"[GEN] cleanup_container done for gen_{current_genid}", flush=True)
 
         # Save metadata
-        eval_successful = all(
-            [
-                get_score(domain, output_dir, current_genid) is not None
-                for domain in domains
-            ]
-        )
+        eval_successful = all([get_score(domain, output_dir, current_genid) is not None for domain in domains])
         metadata["valid_parent"] = metadata["run_eval"] and (eval_successful or meta_patch_files is not None)
         with open(os.path.join(gen_output_dir, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=4)
@@ -1015,23 +999,11 @@ def generate_loop(
             eval_test=eval_test,
             edit_select_parent=edit_select_parent,
         )
-        archive = load_archive_data(
-            os.path.join(output_dir, "archive.jsonl"), last_only=True
-        )[
-            "archive"
-        ]  # pyright: ignore
+        archive = load_archive_data(os.path.join(output_dir, "archive.jsonl"), last_only=True)["archive"]  # pyright: ignore
     else:
-        run_id = (
-            datetime.now().strftime("%Y%m%d_%H%M%S_%f") if run_id is None else run_id
-        )
-        output_dir_parent = (
-            os.path.join(os.getcwd(), "outputs/")
-            if output_dir_parent is None
-            else output_dir_parent
-        )
-        output_dir = os.path.normpath(
-            os.path.join(output_dir_parent, f"generate_{run_id}/")
-        )
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f") if run_id is None else run_id
+        output_dir_parent = os.path.join(os.getcwd(), "outputs/") if output_dir_parent is None else output_dir_parent
+        output_dir = os.path.normpath(os.path.join(output_dir_parent, f"generate_{run_id}/"))
         os.makedirs(output_dir, exist_ok=True)
         root_dir, root_commit = setup_initial_gen(
             output_dir,
@@ -1073,12 +1045,27 @@ def generate_loop(
             )
             print(f"generate_loop: generation 0 completed, parent None")
             if metadata["run_eval"] and "polyglot" in domains:
-                run_harness_polyglot(root_dir, output_dir, 0, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+                run_harness_polyglot(
+                    root_dir,
+                    output_dir,
+                    0,
+                    skip_staged_eval=skip_staged_eval,
+                    num_samples=eval_samples[domains.index("polyglot")],
+                )
             if metadata["run_eval"] and "swebench_pro" in domains:
-                run_harness_swebench_pro(root_dir, output_dir, 0, num_samples=eval_samples[domains.index("swebench_pro")])
+                run_harness_swebench_pro(
+                    root_dir, output_dir, 0, num_samples=eval_samples[domains.index("swebench_pro")]
+                )
             for arc_domain in ("arc1", "arc2"):
                 if metadata["run_eval"] and arc_domain in domains:
-                    run_harness_arc(root_dir, output_dir, 0, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
+                    run_harness_arc(
+                        root_dir,
+                        output_dir,
+                        0,
+                        arc_domain,
+                        num_samples=eval_samples[domains.index(arc_domain)],
+                        max_workers=eval_workers,
+                    )
         elif meta_patch_files is None or len(meta_patch_files) <= 0:
             archive = update_and_save_archive(output_dir, [], new_node="initial")
             metadata = {
@@ -1089,7 +1076,9 @@ def generate_loop(
             }
         elif reset_task_agent:
             # Task agent is the same as initial agent
-            meta_patch_files = process_meta_patch_files(meta_patch_files, output_dir, reset_task_agent=reset_task_agent, reset_meta_agent=reset_meta_agent)
+            meta_patch_files = process_meta_patch_files(
+                meta_patch_files, output_dir, reset_task_agent=reset_task_agent, reset_meta_agent=reset_meta_agent
+            )
             archive = update_and_save_archive(output_dir, [], new_node="initial")
             gen_output_dir = os.path.join(output_dir, f"gen_initial")
             metadata = {
@@ -1110,7 +1099,9 @@ def generate_loop(
                 json.dump(metadata, f, indent=4)
         else:
             # Process meta patch files
-            meta_patch_files = process_meta_patch_files(meta_patch_files, output_dir, reset_task_agent=reset_task_agent, reset_meta_agent=reset_meta_agent)
+            meta_patch_files = process_meta_patch_files(
+                meta_patch_files, output_dir, reset_task_agent=reset_task_agent, reset_meta_agent=reset_meta_agent
+            )
             # add node 0, which is the evaled version of the patches applied
             archive = update_and_save_archive(output_dir, [], new_node=0)
             metadata = generate(
@@ -1139,12 +1130,27 @@ def generate_loop(
             print(f"generate_loop: generation 0 completed, parent None")
             # Evaluate the agent on polyglot if needed
             if metadata["run_eval"] and "polyglot" in domains:
-                run_harness_polyglot(root_dir, output_dir, 0, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+                run_harness_polyglot(
+                    root_dir,
+                    output_dir,
+                    0,
+                    skip_staged_eval=skip_staged_eval,
+                    num_samples=eval_samples[domains.index("polyglot")],
+                )
             if metadata["run_eval"] and "swebench_pro" in domains:
-                run_harness_swebench_pro(root_dir, output_dir, 0, num_samples=eval_samples[domains.index("swebench_pro")])
+                run_harness_swebench_pro(
+                    root_dir, output_dir, 0, num_samples=eval_samples[domains.index("swebench_pro")]
+                )
             for arc_domain in ("arc1", "arc2"):
                 if metadata["run_eval"] and arc_domain in domains:
-                    run_harness_arc(root_dir, output_dir, 0, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
+                    run_harness_arc(
+                        root_dir,
+                        output_dir,
+                        0,
+                        arc_domain,
+                        num_samples=eval_samples[domains.index(arc_domain)],
+                        max_workers=eval_workers,
+                    )
 
         # Evaluate the entire archive as an ensemble
         eval_ensemble = (
@@ -1157,25 +1163,16 @@ def generate_loop(
                 _ = get_ensemble_scores_container(
                     docker_client,
                     domain,
-                    (
-                        output_dir
-                        if optimize_option != "only_ensemble"
-                        else agent_archive_path
-                    ),
+                    (output_dir if optimize_option != "only_ensemble" else agent_archive_path),
                     gen_output_dir=metadata["gen_output_dir"],
                     root_dir=root_dir,
                     root_commit=root_commit,
-                    prev_patch_files=metadata["prev_patch_files"]
-                    + metadata["curr_patch_files"],
+                    prev_patch_files=metadata["prev_patch_files"] + metadata["curr_patch_files"],
                     num_samples=eval_n,
                     subsets=[
                         eval_subset,
                         eval_subset.replace("_train", "_val"),
-                        *(
-                            [eval_subset.replace("_train", "_test")]
-                            if eval_test
-                            else []
-                        ),
+                        *([eval_subset.replace("_train", "_test")] if eval_test else []),
                     ],
                 )
 
@@ -1195,7 +1192,8 @@ def generate_loop(
             domains,
             output_dir,
             archive,
-            root_dir, root_commit,
+            root_dir,
+            root_commit,
         )
     for current_genid in range(start_genid, max_generation + 1):
         print(f"[ITER] >>> starting gen_{current_genid}, parent={parent_genid}", flush=True)
@@ -1222,7 +1220,10 @@ def generate_loop(
             max_generation=max_generation,
             meta_agent_timeout_seconds=meta_agent_timeout_seconds,
         )
-        print(f"[ITER] <<< generate() returned for gen_{current_genid}, run_eval={metadata.get('run_eval')} parent_success={metadata.get('parent_agent_success')}", flush=True)
+        print(
+            f"[ITER] <<< generate() returned for gen_{current_genid}, run_eval={metadata.get('run_eval')} parent_success={metadata.get('parent_agent_success')}",
+            flush=True,
+        )
 
         # NOTE: need to update and save archive before running ensembling eval
         archive = update_and_save_archive(output_dir, archive, new_node=current_genid)
@@ -1235,14 +1236,29 @@ def generate_loop(
 
         # Evaluate the agent on polyglot if needed
         if metadata["run_eval"] and "polyglot" in domains:
-            run_harness_polyglot(root_dir, output_dir, current_genid, skip_staged_eval=skip_staged_eval, num_samples=eval_samples[domains.index("polyglot")])
+            run_harness_polyglot(
+                root_dir,
+                output_dir,
+                current_genid,
+                skip_staged_eval=skip_staged_eval,
+                num_samples=eval_samples[domains.index("polyglot")],
+            )
         if metadata["run_eval"] and "swebench_pro" in domains:
             print(f"[ITER] >>> run_harness_swebench_pro start for gen_{current_genid}", flush=True)
-            run_harness_swebench_pro(root_dir, output_dir, current_genid, num_samples=eval_samples[domains.index("swebench_pro")])
+            run_harness_swebench_pro(
+                root_dir, output_dir, current_genid, num_samples=eval_samples[domains.index("swebench_pro")]
+            )
             print(f"[ITER] <<< run_harness_swebench_pro done for gen_{current_genid}", flush=True)
         for arc_domain in ("arc1", "arc2"):
             if metadata["run_eval"] and arc_domain in domains:
-                run_harness_arc(root_dir, output_dir, current_genid, arc_domain, num_samples=eval_samples[domains.index(arc_domain)], max_workers=eval_workers)
+                run_harness_arc(
+                    root_dir,
+                    output_dir,
+                    current_genid,
+                    arc_domain,
+                    num_samples=eval_samples[domains.index(arc_domain)],
+                    max_workers=eval_workers,
+                )
 
         # Evaluate the entire archive as an ensemble
         eval_ensemble = (
@@ -1255,25 +1271,16 @@ def generate_loop(
                 _ = get_ensemble_scores_container(
                     docker_client,
                     domain,
-                    (
-                        output_dir
-                        if optimize_option != "only_ensemble"
-                        else agent_archive_path
-                    ),
+                    (output_dir if optimize_option != "only_ensemble" else agent_archive_path),
                     gen_output_dir=metadata["gen_output_dir"],
                     root_dir=root_dir,
                     root_commit=root_commit,
-                    prev_patch_files=metadata["prev_patch_files"]
-                    + metadata["curr_patch_files"],
+                    prev_patch_files=metadata["prev_patch_files"] + metadata["curr_patch_files"],
                     num_samples=eval_n,
                     subsets=[
                         eval_subset,
                         eval_subset.replace("_train", "_val"),
-                        *(
-                            [eval_subset.replace("_train", "_test")]
-                            if eval_test
-                            else []
-                        ),
+                        *([eval_subset.replace("_train", "_test")] if eval_test else []),
                     ],
                 )
 
@@ -1290,18 +1297,12 @@ def generate_loop(
             for split in splits:  # pyright: ignore
                 for stype in score_types:
                     plot_progress_single(domain, output_dir, split=split, type=stype)
-                    visualize_archive_single(
-                        domain, output_dir, split=split, type=stype
-                    )
+                    visualize_archive_single(domain, output_dir, split=split, type=stype)
 
         # Combined together plots across all domains (if there is more than one domain)
         if len(domains) > 1:
             domain_splits_sets = [set(get_domain_splits(d)) for d in domains]
-            common_splits = (
-                sorted(list(set.intersection(*domain_splits_sets)))
-                if domain_splits_sets
-                else []
-            )
+            common_splits = sorted(list(set.intersection(*domain_splits_sets))) if domain_splits_sets else []
             if optimize_option == "only_ensemble":
                 together_score_types = ["ensemble"]
             elif eval_ensemble:
@@ -1311,9 +1312,7 @@ def generate_loop(
             for split in common_splits:
                 for stype in together_score_types:
                     plot_progress_together(domains, output_dir, split=split, type=stype)
-                    visualize_archive_together(
-                        domains, output_dir, split=split, type=stype
-                    )
+                    visualize_archive_together(domains, output_dir, split=split, type=stype)
 
         # Select next parent
         parent_genid = None
@@ -1325,7 +1324,8 @@ def generate_loop(
                 domains,
                 output_dir,
                 archive,
-                root_dir, root_commit,
+                root_dir,
+                root_commit,
             )
 
         print(f"generate_loop: generation {current_genid} completed, parent {parent_genid}")
@@ -1428,9 +1428,12 @@ if __name__ == "__main__":
         "--run_baseline",
         type=str,
         choices=[
-            "no_selfimprove", "no_archive",
-            "dgm", "dgm_custom",
-            "dgm+no_selfimprove", "dgm_custom+no_selfimprove",
+            "no_selfimprove",
+            "no_archive",
+            "dgm",
+            "dgm_custom",
+            "dgm+no_selfimprove",
+            "dgm_custom+no_selfimprove",
         ],
         default=None,
         help="Run baseline",
@@ -1482,9 +1485,7 @@ if __name__ == "__main__":
 
     # Post-parse validation
     if args.optimize_option == "only_ensemble" and args.agent_archive_path is None:
-        parser.error(
-            "--agent_archive_path is required when --optimize_option=only_ensemble"
-        )
+        parser.error("--agent_archive_path is required when --optimize_option=only_ensemble")
     if args.eval_samples is None:
         eval_samples = [-1] * len(args.domains)
     elif len(args.eval_samples) == len(args.domains):
