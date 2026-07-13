@@ -737,7 +737,6 @@ def generate(
     }
     run_eval = not run_meta_agent  # always run eval if not running meta agent
     metadata["run_eval"] = run_eval
-    print(metadata)
 
     # Create and start the Docker container
     from utils.egress import ensure_egress_infra, teardown_egress_infra
@@ -758,15 +757,19 @@ def generate(
     container_output_folder = "/tmp/"
 
     try:
-        container = build_container(
-            docker_client,
-            root_dir,
-            image_name,
-            container_name,
-            domains=domains,
-            egress=egress_infra,
-        )
-        container.start()
+        try:
+            container = build_container(
+                docker_client,
+                root_dir,
+                image_name,
+                container_name,
+                domains=domains,
+                egress=egress_infra,
+            )
+            container.start()
+        except Exception as e:
+            safe_log(f"gen_{current_genid}: container build/start failed: {e}")
+            raise
 
         # Make a copy of the repo
         if run_baseline and "no_selfimprove" in run_baseline:
