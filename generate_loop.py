@@ -558,6 +558,33 @@ def copy_prev_eval_to_container(
         f"find '{container_prev_eval_path}' -type f \\( -name '*_test' -o -name '*_test.*' -o -name '*_test_*' \\) -delete",
     ]
 
+    # 5) Graded-artifact leak guard (KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS).
+    #    The polyglot harness writes the RAW grader stdout -- hidden test
+    #    names, assertion diffs, expected/actual output -- to
+    #    <instance_id>_eval.md (domains/polyglot/harness.py: eval_result_file).
+    #    The val/test pruning above does NOT remove these train-split raw-output
+    #    tails, so the meta-agent -- which is handed the bash + editor tools
+    #    (meta_agent.py: tools_available='all') and can cat/view arbitrary
+    #    absolute paths in this copied tree -- could read far more than the
+    #    intended scalar resolved/unresolved score, defeating HA's "scalar-score"
+    #    label. Default: LEAK-CLOSED (delete the raw *_eval.md tails; the scalar
+    #    report JSONs and metadata that carry resolved/unresolved counts are
+    #    kept). Set KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS=1 (or true/yes/on) to
+    #    retain them for faithful reproduction of the un-guarded baseline.
+    _leak_train_eval = os.environ.get(
+        "KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if not _leak_train_eval:
+        # Prune grader-side raw output: the hidden-test stdout tails (*_eval.md)
+        # and the eval-container infra logs (*_docker.log). The per-task agent
+        # chat histories are the agent's OWN transcript (in-regime) and the
+        # scalar resolved/unresolved counts live in report/metadata JSON -- both
+        # kept, so the meta-agent still has legitimate evolution signal.
+        prune_cmds.append(
+            f"find '{container_prev_eval_path}' -type f "
+            r"\( -name '*_eval.md' -o -name '*_docker.log' \) -delete"
+        )
+
     for cmd in prune_cmds:
         exec_result = container.exec_run(["bash", "-lc", cmd], workdir="/")
 
