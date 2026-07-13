@@ -96,6 +96,31 @@ def _run_container_prune_command(container, cmd):
     return exec_result
 
 
+# Raw grader-output artifacts that carry HIDDEN-test information (test file
+# names, raw stdout/stderr, per-test pass/fail, per-attempt correctness).
+# These are written OUTSIDE the ``official_eval`` tree by the polyglot harness
+# (``*_eval.md``/``*_docker.log``) and are the belt-and-suspenders denylist for
+# the SWE-bench Pro artifact filenames in case a future harness emits them
+# outside ``official_eval/``.
+_RAW_EVAL_ARTIFACT_NAMES = (
+    "*_eval.md",
+    "*_docker.log",
+    "*_stdout.log",
+    "*_stderr.log",
+    "*_output.json",
+    "*_entryscript.sh",
+)
+
+
+def _raw_artifact_find(quoted_path):
+    name_expr = " -o ".join(f"-name '{name}'" for name in _RAW_EVAL_ARTIFACT_NAMES)
+    return f"find {quoted_path} -type f \\( {name_expr} \\)"
+
+
+def _official_eval_dir_find(quoted_path):
+    return f"find {quoted_path} -type d -name 'official_eval'"
+
+
 def _prune_copied_eval_tree(container, container_prev_eval_path, current_genid=None):
     quoted_path = shlex.quote(container_prev_eval_path)
     repo_glob = shlex.quote(f"*{REPO_NAME}*")
@@ -120,42 +145,66 @@ def _prune_copied_eval_tree(container, container_prev_eval_path, current_genid=N
     ]
 
     # 5) Graded-artifact leak guard (KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS).
-    #    The polyglot harness writes the RAW grader stdout -- hidden test
-    #    names, assertion diffs, expected/actual output -- to
-    #    <instance_id>_eval.md (domains/polyglot/harness.py: eval_result_file).
-    #    The val/test pruning above does NOT remove these train-split raw-output
-    #    tails, so the meta-agent -- which is handed the bash + editor tools
-    #    (meta_agent.py: tools_available='all') and can cat/view arbitrary
-    #    absolute paths in this copied tree -- could read far more than the
-    #    intended scalar resolved/unresolved score, defeating HA's "scalar-score"
-    #    label. Default: LEAK-CLOSED (delete the raw *_eval.md tails; the scalar
-    #    report JSONs and metadata that carry resolved/unresolved counts are
-    #    kept). Set KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS=1 (or true/yes/on) to
-    #    retain them for faithful reproduction of the un-guarded baseline.
+    #    The eval harnesses write RAW grader output -- hidden-test file names,
+    #    raw stdout/stderr, per-test pass/fail, and per-attempt correctness --
+    #    that far exceeds the scalar resolved/unresolved score HA's
+    #    "matched-information" label promises. The meta-agent is handed the bash
+    #    + editor tools (meta_agent.py: tools_available='all') and, because its
+    #    only instruction is "Modify any part of the codebase" (it discovers the
+    #    copied eval tree by exploring the filesystem, not via hardcoded reads),
+    #    it can cat/view ANY file in this tree. The leak surfaces are:
+    #      * SWE-bench Pro: official_eval/<uid>/*_stdout.log, *_stderr.log,
+    #        *_output.json (parsed per-test outcomes) and *_entryscript.sh
+    #        (embeds hidden-test file names) -- written by the parent-repo
+    #        evaluator (benchmarks/swebench_pro/.../swe_bench_pro_eval.py:
+    #        collect_outputs_* / save_entryscript_copy) into official_eval/.
+    #      * ARC: official_eval/results.json -- per-attempt {attempt, correct}
+    #        lists (domains/arc/harness.py: _run_local_scorer), richer than the
+    #        scalar score.
+    #      * polyglot: <instance_id>_eval.md and <instance_id>_docker.log --
+    #        raw grader stdout/assertion diffs (domains/polyglot/harness.py:
+    #        eval_result_file), written at the eval-dir top level, NOT under
+    #        official_eval/.
+    #
+    #    A file-extension allowlist ("keep only *.json/*.md") CANNOT close this:
+    #    the leak files SHARE extensions with the in-regime scalar/transcript
+    #    files (official_eval/results.json, eval_results.json, *_output.json are
+    #    .json; *_eval.md is .md). So we invert at DIRECTORY granularity instead
+    #    -- delete the entire grader-output ``official_eval/`` subtree regardless
+    #    of the filenames inside it (this is the allowlist's robustness property:
+    #    any future artifact filename added under official_eval/ is removed
+    #    automatically) -- and pair it with a filename denylist for the polyglot
+    #    artifacts that live outside official_eval/. The scalar report.json /
+    #    metadata.json / task_results.json (written OUTSIDE official_eval/, e.g.
+    #    gen_<N>/<domain>_eval/report.json), the per-task {instance_id}.json
+    #    scalars, and the agent's OWN chat *.md transcripts + model_patch.diff
+    #    are all kept, so the meta-agent still has legitimate evolution signal.
+    #    Default: LEAK-CLOSED. Set KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS=1 (or
+    #    true/yes/on) to retain them for faithful reproduction of the un-guarded
+    #    baseline.
     leak_train_eval = _truthy_env("KCSI_HA_LEAK_TRAIN_EVAL_ARTIFACTS")
     if not leak_train_eval:
-        # Prune grader-side raw output: the hidden-test stdout tails (*_eval.md)
-        # and the eval-container infra logs (*_docker.log). The per-task agent
-        # chat histories are the agent's OWN transcript (in-regime) and the
-        # scalar resolved/unresolved counts live in report/metadata JSON -- both
-        # kept, so the meta-agent still has legitimate evolution signal.
-        raw_artifact_find = (
-            f"find {quoted_path} -type f "
-            r"\( -name '*_eval.md' -o -name '*_docker.log' \)"
+        # (a) Remove the entire grader-output tree (SWE-bench Pro + ARC).
+        prune_cmds.append(
+            f"{_official_eval_dir_find(quoted_path)} -prune -exec rm -rf {{}} +"
         )
-        prune_cmds.append(f"{raw_artifact_find} -delete")
+        # (b) Remove raw grader-artifact files by pattern (polyglot + any that
+        #     a future harness writes outside official_eval/).
+        prune_cmds.append(f"{_raw_artifact_find(quoted_path)} -delete")
 
     for cmd in prune_cmds:
         _run_container_prune_command(container, cmd)
 
     if not leak_train_eval:
-        raw_artifact_find = (
-            f"find {quoted_path} -type f "
-            r"\( -name '*_eval.md' -o -name '*_docker.log' \)"
-        )
+        # Fail-closed re-scan: if ANY grader-output directory or raw-artifact
+        # file survived (e.g. a deletion silently failed), abort rather than
+        # hand the meta-agent a leaking tree.
         _run_container_prune_command(
             container,
-            f"remaining=$({raw_artifact_find} -print -quit); "
+            "remaining=$("
+            f"{_official_eval_dir_find(quoted_path)} -print -quit; "
+            f"{_raw_artifact_find(quoted_path)} -print -quit"
+            "); "
             'if [ -n "$remaining" ]; then echo "$remaining"; exit 1; fi',
         )
 
