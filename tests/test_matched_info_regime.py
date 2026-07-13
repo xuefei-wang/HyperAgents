@@ -259,6 +259,9 @@ def test_new_artifact_prune_failure_raises(monkeypatch, fail_on):
 
 
 def test_generate_propagates_prune_failures_instead_of_continuing(monkeypatch, tmp_path):
+    # Run in open-egress mode so the fake docker client isn't asked to create
+    # real egress networks (egress isolation is covered by test_egress_isolation).
+    monkeypatch.setenv("KCSI_HA_EGRESS_OPEN", "1")
     container = _FakeContainer()
     monkeypatch.setattr(generate_loop, "build_container", lambda *args, **kwargs: container)
     monkeypatch.setattr(generate_loop, "apply_diffs_container", lambda *args, **kwargs: "commit")

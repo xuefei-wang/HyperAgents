@@ -753,8 +753,15 @@ def generate(
     print(metadata)
 
     # Create and start the Docker container
+    from utils.egress import ensure_egress_infra, teardown_egress_infra
+
     image_name = f"{REPO_NAME}"
     container_name = f"{REPO_NAME}-gl-container-{run_id}"
+    # Default-isolated egress: attach the meta-agent container to an internal
+    # no-route network whose only egress is the allowlisting proxy sidecar
+    # (provider API + PyPI). None in open mode (KCSI_HA_EGRESS_OPEN), where the
+    # legacy host networking is preserved.
+    egress_infra = ensure_egress_infra(docker_client, image_name, run_id)
     print(f"[GEN] gen_{current_genid}: building container", flush=True)
     container = build_container(
         docker_client,
@@ -762,6 +769,7 @@ def generate(
         image_name,
         container_name,
         domains=domains,
+        egress=egress_infra,
     )
     print(f"[GEN] gen_{current_genid}: container built; starting", flush=True)
     container.start()
@@ -995,6 +1003,7 @@ def generate(
 
         # Cleanup container
         cleanup_container(container)
+        teardown_egress_infra(docker_client, egress_infra)
         print(f"[GEN] cleanup_container done for gen_{current_genid}", flush=True)
 
         # Save metadata

@@ -107,10 +107,20 @@ def build_container(
     force_rebuild=False,
     domains=None,
     verbose=True,
+    egress=None,
 ):
     """
     Build the Docker image with proxy and host networking, then run it interactively.
+
+    When ``egress`` is an ``EgressInfra`` (the default-isolated path the
+    meta-agent caller sets up) the container is attached to the internal
+    no-route network and pointed at the allowlisting proxy sidecar, and
+    ``network_mode="host"`` is dropped (host networking is incompatible with
+    per-container egress rules). When ``egress is None`` (open mode /
+    KCSI_HA_EGRESS_OPEN, or the non-meta-agent callers) it keeps the legacy
+    host networking.
     """
+    from utils.egress import agent_run_kwargs
     try:
         # Set up proxy environment
         proxy_env = {
@@ -255,6 +265,14 @@ def build_container(
             },
             "command": "tail -f /dev/null",
         }
+
+        # Default-isolated egress: swap host networking for the internal
+        # no-route network + allowlisting proxy. `network_mode` and `network`
+        # are mutually exclusive in the docker SDK, so drop the former.
+        egress_kwargs = agent_run_kwargs(egress)
+        if egress_kwargs:
+            run_kwargs.pop("network_mode", None)
+            run_kwargs.update(egress_kwargs)
 
         # Add GPU support
         if device_requests:
